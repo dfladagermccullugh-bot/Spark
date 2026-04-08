@@ -67,6 +67,17 @@ Generate a single text message. Be specific to THIS project's actual state. Brin
 a question, or a concrete suggestion. Do NOT mention the time gap or that they've been away.\
 """
 
+CONTRIBUTION_NUDGE_ADDENDUM = """
+AGENCY LEVEL: {agency_level}
+
+If agency is 'light' or 'full', you can offer to DO things, not just suggest. For example:
+- "I stubbed out the endpoint - check branch spark/add-auth-endpoint"
+- "Want me to write the error handling middleware? Reply 'go' and I'll have it ready in a minute."
+- "I noticed the test file is missing for your auth module. Want me to draft it?"
+
+If agency is 'suggest', only suggest ideas and directions. Do NOT offer to write code.
+"""
+
 REPLY_PROMPT_TEMPLATE = """\
 Your co-founder just replied to your message about their project. Respond naturally.
 
