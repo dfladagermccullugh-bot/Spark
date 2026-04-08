@@ -6,8 +6,6 @@ import json
 import logging
 from datetime import datetime
 
-import anthropic
-
 from spark.core.context_engine import build_cross_project_context, build_project_context
 from spark.core.feedback import get_feedback_context, record_nudge_sent
 from spark.core.memory import get_memory_context
@@ -150,14 +148,16 @@ def generate_nudge(
         prompt += "\n\n" + CONTRIBUTION_NUDGE_ADDENDUM.format(agency_level=agency_level)
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        from spark.llm import completion, get_text
+
+        response = completion(
             model=model,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            system=SYSTEM_PROMPT,
+            max_tokens=500,
         )
-        nudge_text = response.content[0].text.strip()
+        nudge_text = get_text(response)
 
         # Record the outbound message
         with get_session() as session:
@@ -209,14 +209,16 @@ def generate_reply(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        from spark.llm import completion, get_text
+
+        response = completion(
             model=model,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            system=SYSTEM_PROMPT,
+            max_tokens=500,
         )
-        reply_text = response.content[0].text.strip()
+        reply_text = get_text(response)
 
         # Record both messages
         with get_session() as session:

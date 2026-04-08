@@ -11,8 +11,6 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
-
 from spark.core.context_engine import build_project_context
 from spark.db.connection import get_session
 from spark.db.models import AgentTask, TaskStatus, TaskType
@@ -212,47 +210,49 @@ Use the tools to read existing files for context, then write the changes. \
 Keep changes focused and minimal. Match the existing code style.\
 """
 
+    from spark.llm import (
+        completion,
+        get_text,
+        get_tool_calls,
+        is_done,
+        build_tool_result_messages,
+        supports_tools,
+    )
+
     files_changed = []
-    client = anthropic.Anthropic(api_key=api_key)
     messages = [{"role": "user", "content": user_prompt}]
 
+    use_tools = supports_tools(model)
+
     for turn in range(max_turns):
-        response = client.messages.create(
+        response = completion(
             model=model,
-            max_tokens=4096,
-            system=CODE_GEN_SYSTEM_PROMPT,
-            tools=CODE_TOOLS,
             messages=messages,
+            api_key=api_key,
+            system=CODE_GEN_SYSTEM_PROMPT,
+            max_tokens=4096,
+            tools=CODE_TOOLS if use_tools else None,
         )
 
-        # Check if we're done (no more tool use)
-        if response.stop_reason == "end_turn":
-            # Extract final text summary
-            summary = ""
-            for block in response.content:
-                if block.type == "text":
-                    summary += block.text
+        # Check if we're done (no more tool calls)
+        if is_done(response):
+            summary = get_text(response)
             break
 
         # Process tool calls
-        tool_results = []
-        assistant_content = response.content
+        tool_calls = get_tool_calls(response)
+        results = {}
+        for tc in tool_calls:
+            result = _execute_tool(tc["name"], tc["arguments"], project_path)
 
-        for block in assistant_content:
-            if block.type == "tool_use":
-                result = _execute_tool(block.name, block.input, project_path)
+            if tc["name"] == "write_file" and "Successfully" in result:
+                files_changed.append(tc["arguments"]["path"])
 
-                if block.name == "write_file" and "Successfully" in result:
-                    files_changed.append(block.input["path"])
+            results[tc["id"]] = result
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result,
-                })
-
-        messages.append({"role": "assistant", "content": assistant_content})
-        messages.append({"role": "user", "content": tool_results})
+        # Build continuation messages
+        continuation = build_tool_result_messages(response, results)
+        messages.extend(continuation)
     else:
         summary = "Reached maximum tool-use turns"
 

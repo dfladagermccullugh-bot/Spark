@@ -13,8 +13,6 @@ from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
-import anthropic
-
 from spark.db.connection import get_session
 from spark.db.models import KnowledgeItem
 
@@ -144,12 +142,12 @@ def fetch_and_summarize(
         logger.debug(f"Not enough content from {url}")
         return None
 
-    # Summarize with Claude
+    # Summarize with LLM
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        from spark.llm import completion, get_text
+
+        response = completion(
             model=model,
-            max_tokens=200,
             messages=[{
                 "role": "user",
                 "content": SUMMARIZE_PROMPT.format(
@@ -158,8 +156,10 @@ def fetch_and_summarize(
                     content=text[:MAX_CONTENT_LENGTH],
                 ),
             }],
+            api_key=api_key,
+            max_tokens=200,
         )
-        return response.content[0].text.strip()
+        return get_text(response)
 
     except Exception as e:
         logger.error(f"Failed to summarize {url}: {e}")

@@ -24,8 +24,16 @@ class SparkSettings(BaseSettings):
         extra="ignore",
     )
 
-    # Required
+    # Required - at least one API key needed
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    gemini_api_key: str = ""
+    groq_api_key: str = ""
+    openrouter_api_key: str = ""
+    llm_api_key: str = ""  # Generic fallback for any provider
+    llm_api_base: str = ""  # Custom endpoint (e.g., http://localhost:11434 for Ollama)
+
+    # Telegram
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
@@ -52,7 +60,10 @@ class SparkSettings(BaseSettings):
     enrich_knowledge: bool = True
     learn_from_conversations: bool = True
 
-    # LLM
+    # LLM - model string determines the provider
+    # Examples: "claude-sonnet-4-20250514", "gpt-4o", "gemini/gemini-2.5-flash",
+    #           "groq/llama-3.3-70b-versatile", "ollama/llama3.1",
+    #           "openrouter/anthropic/claude-sonnet-4"
     model: str = "claude-sonnet-4-20250514"
 
     @property
@@ -62,6 +73,43 @@ class SparkSettings(BaseSettings):
     @property
     def chromadb_path(self) -> Path:
         return self.data_dir / "chromadb"
+
+    @property
+    def api_key(self) -> str:
+        """Resolve the API key for the configured model.
+
+        Priority: provider-specific key > generic llm_api_key > anthropic_api_key (legacy).
+        """
+        model_lower = self.model.lower()
+
+        if model_lower.startswith("groq/") and self.groq_api_key:
+            return self.groq_api_key
+        if model_lower.startswith("gemini/") and self.gemini_api_key:
+            return self.gemini_api_key
+        if model_lower.startswith("openrouter/") and self.openrouter_api_key:
+            return self.openrouter_api_key
+        if model_lower.startswith(("gpt-", "o1-", "o3-")) and self.openai_api_key:
+            return self.openai_api_key
+        if "claude" in model_lower and self.anthropic_api_key:
+            return self.anthropic_api_key
+
+        # Fallbacks
+        return self.llm_api_key or self.anthropic_api_key
+
+    def setup_llm_env(self) -> None:
+        """Set environment variables so litellm can find API keys."""
+        import os
+
+        key_map = {
+            "ANTHROPIC_API_KEY": self.anthropic_api_key,
+            "OPENAI_API_KEY": self.openai_api_key,
+            "GEMINI_API_KEY": self.gemini_api_key,
+            "GROQ_API_KEY": self.groq_api_key,
+            "OPENROUTER_API_KEY": self.openrouter_api_key,
+        }
+        for env_var, value in key_map.items():
+            if value and not os.environ.get(env_var):
+                os.environ[env_var] = value
 
     def ensure_dirs(self) -> None:
         """Create data directories if they don't exist."""

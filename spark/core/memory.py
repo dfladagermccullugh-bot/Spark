@@ -11,8 +11,6 @@ import json
 import logging
 from datetime import datetime
 
-import anthropic
-
 from spark.db.connection import get_session
 from spark.db.models import AgentMemory, Message, MemoryType, MessageDirection
 
@@ -74,16 +72,18 @@ def extract_memories(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        from spark.llm import completion, get_text
+
+        response = completion(
             model=model,
-            max_tokens=500,
             messages=[{
                 "role": "user",
                 "content": MEMORY_EXTRACTION_PROMPT.format(conversation=conversation),
             }],
+            api_key=api_key,
+            max_tokens=500,
         )
-        text = response.content[0].text.strip()
+        text = get_text(response)
 
         # Parse JSON from response (handle markdown code blocks)
         if "```" in text:

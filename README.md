@@ -27,10 +27,12 @@ Already have Python 3.11+ and know your way around? Here's the 60-second version
 git clone https://github.com/dfladagermccullugh-bot/Spark.git
 cd Spark
 pip install -e .
-cp .env.example .env          # then edit with your API keys (see below)
+cp .env.example .env       # add your LLM API key + Telegram creds
 spark init ~/projects/my-app --desc "SaaS dashboard" --goal "Ship billing"
 spark run
 ```
+
+Works with Claude, GPT-4o, Gemini, Groq, Ollama, OpenRouter, and [100+ other providers](https://docs.litellm.ai/docs/providers).
 
 ## Full Installation
 
@@ -38,7 +40,7 @@ spark run
 
 - **Python 3.11+** (`python3 --version` to check)
 - **Git** (for project activity tracking)
-- **A Claude API key** from [console.anthropic.com](https://console.anthropic.com/)
+- **An LLM API key** from any supported provider (see below)
 - **A Telegram bot** (setup instructions below)
 
 ### Step 1: Clone and install
@@ -75,16 +77,42 @@ Spark communicates with you via Telegram. You need a bot token and your chat ID.
 1. Search for your bot by the username you gave it during creation
 2. Press "Start" - this is required before the bot can message you
 
-### Step 3: Configure
+### Step 3: Choose your LLM provider
+
+Spark works with any major LLM provider. Pick one and set the API key:
+
+| Provider | Model string | API key env var |
+|---|---|---|
+| **Anthropic** (Claude) | `claude-sonnet-4-20250514` | `SPARK_ANTHROPIC_API_KEY` |
+| **OpenAI** (GPT-4o, o3) | `gpt-4o` | `SPARK_OPENAI_API_KEY` |
+| **Google** (Gemini) | `gemini/gemini-2.5-flash` | `SPARK_GEMINI_API_KEY` |
+| **Groq** (fast, free tier) | `groq/llama-3.3-70b-versatile` | `SPARK_GROQ_API_KEY` |
+| **OpenRouter** (any model) | `openrouter/anthropic/claude-sonnet-4` | `SPARK_OPENROUTER_API_KEY` |
+| **Ollama** (local, free) | `ollama/llama3.1` | None needed |
+
+For Ollama, set `SPARK_LLM_API_BASE=http://localhost:11434` and no API key is needed.
+
+### Step 4: Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your keys:
+Edit `.env` with your provider key and Telegram credentials:
 
 ```bash
+# Pick ONE provider key (example: Anthropic)
 SPARK_ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Or use OpenAI instead:
+# SPARK_OPENAI_API_KEY=sk-your-key-here
+# SPARK_MODEL=gpt-4o
+
+# Or Groq for fast + free:
+# SPARK_GROQ_API_KEY=gsk_your-key-here
+# SPARK_MODEL=groq/llama-3.3-70b-versatile
+
+# Telegram (required)
 SPARK_TELEGRAM_BOT_TOKEN=123456:ABC-your-token-here
 SPARK_TELEGRAM_CHAT_ID=your-chat-id-here
 ```
@@ -95,7 +123,7 @@ Verify your configuration:
 spark setup
 ```
 
-### Step 4: Register a project
+### Step 5: Register a project
 
 ```bash
 cd ~/projects/my-app
@@ -110,7 +138,7 @@ spark init ~/projects/my-app --desc "SaaS dashboard" --goal "Ship billing"
 
 Spark will scan the git history, compute your work rhythm, and start tracking.
 
-### Step 5: (Optional) Feed it knowledge
+### Step 6: (Optional) Feed it knowledge
 
 Drop articles, notes, or bookmark exports into your knowledge folder (`~/knowledge` by default), or import directly:
 
@@ -132,7 +160,7 @@ spark knowledge
 spark search-knowledge "authentication best practices"
 ```
 
-### Step 6: Start Spark
+### Step 7: Start Spark
 
 ```bash
 spark run
@@ -155,18 +183,30 @@ spark status
 
 All settings are via environment variables (with `SPARK_` prefix) or your `.env` file.
 
-### Required
+### LLM Provider (set at least one)
 
 | Variable | Description |
 |---|---|
-| `SPARK_ANTHROPIC_API_KEY` | Claude API key |
-| `SPARK_TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather |
-| `SPARK_TELEGRAM_CHAT_ID` | Your Telegram chat ID |
+| `SPARK_ANTHROPIC_API_KEY` | Anthropic (Claude) |
+| `SPARK_OPENAI_API_KEY` | OpenAI (GPT-4o, o3) |
+| `SPARK_GEMINI_API_KEY` | Google (Gemini) |
+| `SPARK_GROQ_API_KEY` | Groq (Llama, Mixtral) |
+| `SPARK_OPENROUTER_API_KEY` | OpenRouter (any model) |
+| `SPARK_LLM_API_KEY` | Generic fallback for any provider |
+| `SPARK_LLM_API_BASE` | Custom endpoint (e.g., `http://localhost:11434` for Ollama) |
+
+### Telegram (required for messaging)
+
+| Variable | Description |
+|---|---|
+| `SPARK_TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
+| `SPARK_TELEGRAM_CHAT_ID` | Your chat ID |
 
 ### Optional
 
 | Variable | Default | Description |
 |---|---|---|
+| `SPARK_MODEL` | `claude-sonnet-4-20250514` | Model to use (see provider table above) |
 | `SPARK_PROJECTS_DIR` | `~/projects` | Folder containing your projects |
 | `SPARK_KNOWLEDGE_DIR` | `~/knowledge` | Folder for articles, notes, bookmarks |
 | `SPARK_DATA_DIR` | `~/.spark` | Where Spark stores its database and embeddings |
@@ -175,7 +215,6 @@ All settings are via environment variables (with `SPARK_` prefix) or your `.env`
 | `SPARK_QUIET_HOURS_END` | `08:00` | Resume nudges after this time |
 | `SPARK_AGENCY_LEVEL` | `suggest` | `suggest`, `light`, or `full` (see below) |
 | `SPARK_MAX_DAILY_NUDGES` | `3` | Max nudge messages per day |
-| `SPARK_MODEL` | `claude-sonnet-4-20250514` | Claude model to use |
 | `SPARK_DAILY_DIGEST_ENABLED` | `true` | Send a morning project digest |
 | `SPARK_WEEKLY_DIGEST_ENABLED` | `true` | Send a Sunday weekly retrospective |
 | `SPARK_ENRICH_KNOWLEDGE` | `true` | Auto-fetch and summarize URL content |
@@ -303,7 +342,7 @@ Or just reply to any message to continue the conversation.
 | Component | Choice |
 |---|---|
 | Language | Python 3.11+ |
-| LLM | Claude API (Anthropic SDK) |
+| LLM | Any provider via LiteLLM (Anthropic, OpenAI, Google, Groq, Ollama, OpenRouter, ...) |
 | Database | SQLite + SQLAlchemy |
 | Vector Store | ChromaDB (local, no server needed) |
 | File Watching | watchdog |

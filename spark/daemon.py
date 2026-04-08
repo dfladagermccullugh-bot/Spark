@@ -63,8 +63,9 @@ class SparkDaemon:
         """Start the Spark daemon."""
         logger.info("Starting Spark daemon...")
 
-        # Initialize database and vector store
+        # Initialize database, vector store, and LLM env
         self.settings.ensure_dirs()
+        self.settings.setup_llm_env()
         init_db(self.settings.db_path)
         init_chromadb(self.settings.chromadb_path)
 
@@ -218,7 +219,7 @@ class SparkDaemon:
         stall = stalls[0]
         nudge = generate_nudge(
             stall=stall,
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
             agency_level=self.settings.agency_level.value,
         )
@@ -297,11 +298,11 @@ class SparkDaemon:
 
     def _extract_memories(self) -> None:
         """Extract memories from recent conversations."""
-        if not self.settings.anthropic_api_key:
+        if not self.settings.api_key:
             return
         logger.debug("Extracting memories from conversations...")
         stored = process_conversation_for_memories(
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
         )
         if stored:
@@ -309,11 +310,11 @@ class SparkDaemon:
 
     def _enrich_knowledge(self) -> None:
         """Fetch and summarize URL content for knowledge items."""
-        if not self.settings.anthropic_api_key:
+        if not self.settings.api_key:
             return
         logger.debug("Enriching knowledge items...")
         enriched = enrich_knowledge_items(
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
             batch_size=3,
         )
@@ -322,11 +323,11 @@ class SparkDaemon:
 
     def _send_daily_digest(self) -> None:
         """Send the daily project digest."""
-        if not self.settings.anthropic_api_key or not self._delivery:
+        if not self.settings.api_key or not self._delivery:
             return
         logger.info("Generating daily digest...")
         digest = generate_daily_digest(
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
         )
         if digest:
@@ -334,11 +335,11 @@ class SparkDaemon:
 
     def _send_weekly_digest(self) -> None:
         """Send the weekly retrospective digest."""
-        if not self.settings.anthropic_api_key or not self._delivery:
+        if not self.settings.api_key or not self._delivery:
             return
         logger.info("Generating weekly digest...")
         digest = generate_weekly_digest(
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
         )
         if digest:
@@ -380,7 +381,7 @@ class SparkDaemon:
         reply = generate_reply(
             project_id=project_id,
             user_message=text,
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
         )
         return reply
@@ -409,7 +410,7 @@ class SparkDaemon:
             result = generate_code(
                 project_id=proposal.project_id,
                 instruction=proposal.description,
-                api_key=self.settings.anthropic_api_key,
+                api_key=self.settings.api_key,
                 model=self.settings.model,
             )
             if result.success:
@@ -436,7 +437,7 @@ class SparkDaemon:
             result = research_topic(
                 project_id=proposal.project_id,
                 question=proposal.description,
-                api_key=self.settings.anthropic_api_key,
+                api_key=self.settings.api_key,
                 model=self.settings.model,
             )
             if result.success:
@@ -586,7 +587,7 @@ class SparkDaemon:
             result = generate_code(
                 project_id=project_id,
                 instruction=instruction,
-                api_key=self.settings.anthropic_api_key,
+                api_key=self.settings.api_key,
                 model=self.settings.model,
             )
             if result.success:
@@ -626,7 +627,7 @@ class SparkDaemon:
         result = research_topic(
             project_id=project_id,
             question=question,
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
         )
         if result.success:
@@ -670,11 +671,11 @@ class SparkDaemon:
 
     def _cmd_digest(self) -> str:
         """Generate and return a digest on demand."""
-        if not self.settings.anthropic_api_key:
+        if not self.settings.api_key:
             return "API key not configured."
 
         digest = generate_daily_digest(
-            api_key=self.settings.anthropic_api_key,
+            api_key=self.settings.api_key,
             model=self.settings.model,
         )
         if digest:

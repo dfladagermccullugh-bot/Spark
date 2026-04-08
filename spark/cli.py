@@ -143,15 +143,16 @@ def setup():
     console.print(f"  Quiet hours: {settings.quiet_hours_start} - {settings.quiet_hours_end}")
     console.print(f"  Agency level: {settings.agency_level.value}")
     console.print(f"  Max daily nudges: {settings.max_daily_nudges}")
-    console.print(f"  Anthropic key: {'set' if settings.anthropic_api_key else '[red]not set[/red]'}")
+    console.print(f"  Model: {settings.model}")
+    console.print(f"  LLM API key: {'set' if settings.api_key else '[red]not set[/red]'}")
     console.print(f"  Telegram token: {'set' if settings.telegram_bot_token else '[red]not set[/red]'}")
     console.print(f"  Telegram chat ID: {'set' if settings.telegram_chat_id else '[red]not set[/red]'}")
 
     console.print("\nTo configure, set environment variables or edit your .env file.")
     console.print("See .env.example for all available options.")
 
-    if not settings.anthropic_api_key:
-        console.print("\n[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.api_key:
+        console.print("\n[red]An LLM API key is required. Set one of: SPARK_ANTHROPIC_API_KEY, SPARK_OPENAI_API_KEY, SPARK_GROQ_API_KEY, etc.[/red]")
     if not settings.telegram_bot_token:
         console.print("[yellow]SPARK_TELEGRAM_BOT_TOKEN not set - no messaging delivery.[/yellow]")
 
@@ -280,8 +281,8 @@ def run():
     """Start the Spark daemon (foreground)."""
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required. Run `spark setup` for help.[/red]")
+    if not settings.api_key:
+        console.print("[red]An LLM API key is required. Run `spark setup` for help.[/red]")
         raise typer.Exit(1)
 
     # Configure logging
@@ -331,8 +332,8 @@ def do_task(
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.api_key:
+        console.print("[red]An LLM API key is required. Run `spark setup` for help.[/red]")
         raise typer.Exit(1)
 
     from spark.db.connection import get_session
@@ -367,7 +368,7 @@ def do_task(
         result = generate_code(
             project_id=project_id,
             instruction=instruction,
-            api_key=settings.anthropic_api_key,
+            api_key=settings.api_key,
             model=settings.model,
         )
 
@@ -401,8 +402,8 @@ def research(
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.api_key:
+        console.print("[red]An LLM API key is required. Run `spark setup` for help.[/red]")
         raise typer.Exit(1)
 
     from spark.db.connection import get_session
@@ -436,7 +437,7 @@ def research(
         result = research_topic(
             project_id=project_id,
             question=question,
-            api_key=settings.anthropic_api_key,
+            api_key=settings.api_key,
             model=settings.model,
         )
 
@@ -596,8 +597,8 @@ def digest():
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.api_key:
+        console.print("[red]An LLM API key is required. Run `spark setup` for help.[/red]")
         raise typer.Exit(1)
 
     from spark.knowledge.indexer import init_chromadb
@@ -607,7 +608,7 @@ def digest():
 
     with console.status("Generating digest..."):
         text = generate_daily_digest(
-            api_key=settings.anthropic_api_key,
+            api_key=settings.api_key,
             model=settings.model,
         )
 
@@ -695,15 +696,15 @@ def enrich_cmd(
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.api_key:
+        console.print("[red]An LLM API key is required. Run `spark setup` for help.[/red]")
         raise typer.Exit(1)
 
     from spark.knowledge.enricher import enrich_knowledge_items
 
     with console.status("Enriching knowledge items..."):
         enriched = enrich_knowledge_items(
-            api_key=settings.anthropic_api_key,
+            api_key=settings.api_key,
             model=settings.model,
             batch_size=batch,
         )

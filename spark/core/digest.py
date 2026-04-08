@@ -10,8 +10,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-import anthropic
-
 from spark.core.context_engine import build_cross_project_context
 from spark.core.feedback import get_effectiveness_stats
 from spark.core.memory import get_memory_context
@@ -175,14 +173,16 @@ def generate_daily_digest(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        from spark.llm import completion, get_text
+
+        response = completion(
             model=model,
-            max_tokens=400,
-            system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            system=SYSTEM_PROMPT,
+            max_tokens=400,
         )
-        digest_text = response.content[0].text.strip()
+        digest_text = get_text(response)
 
         # Record the digest and message
         now = datetime.utcnow()
@@ -253,14 +253,16 @@ def generate_weekly_digest(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        from spark.llm import completion, get_text
+
+        response = completion(
             model=model,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            system=SYSTEM_PROMPT,
+            max_tokens=500,
         )
-        digest_text = response.content[0].text.strip()
+        digest_text = get_text(response)
 
         now = datetime.utcnow()
         with get_session() as session:

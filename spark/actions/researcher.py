@@ -9,8 +9,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-import anthropic
-
 from spark.core.context_engine import build_project_context
 from spark.db.connection import get_session
 from spark.db.models import AgentTask, TaskStatus, TaskType
@@ -136,15 +134,17 @@ Keep it concise - this will be sent as a message.\
 """
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        from spark.llm import completion, get_text
+
+        response = completion(
             model=model,
-            max_tokens=1500,
-            system=RESEARCH_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": research_context}],
+            api_key=api_key,
+            system=RESEARCH_SYSTEM_PROMPT,
+            max_tokens=1500,
         )
 
-        summary = response.content[0].text.strip()
+        summary = get_text(response)
 
         # Build findings list
         findings = []
