@@ -322,6 +322,132 @@ def goal(
         console.print(f"Updated goal for [cyan]{p.name}[/cyan]: {text}")
 
 
+@app.command(name="do")
+def do_task(
+    instruction: str = typer.Argument(..., help="What to do (e.g., 'stub out the auth endpoint')"),
+    project: str = typer.Option(None, "--project", "-p", help="Project name (default: most recent)"),
+):
+    """Ask Spark to do work on a project (write code, create files, etc.)."""
+    _init_db_from_settings()
+    settings = get_settings()
+
+    if not settings.anthropic_api_key:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+        raise typer.Exit(1)
+
+    from spark.db.connection import get_session
+    from spark.db.models import Project, ProjectStatus
+    from spark.knowledge.indexer import init_chromadb
+    from spark.actions.code_generator import generate_code
+    from spark.actions.github_ops import create_contribution
+
+    init_chromadb(settings.chromadb_path)
+
+    with get_session() as session:
+        if project:
+            p = session.query(Project).filter(Project.name == project).first()
+        else:
+            p = (
+                session.query(Project)
+                .filter(Project.status == ProjectStatus.ACTIVE.value)
+                .order_by(Project.last_activity_at.desc())
+                .first()
+            )
+
+        if not p:
+            console.print("[red]No project found.[/red]")
+            raise typer.Exit(1)
+
+        project_id = p.id
+        project_name = p.name
+
+    console.print(f"Working on [cyan]{project_name}[/cyan]: {instruction}\n")
+
+    with console.status("Generating code..."):
+        result = generate_code(
+            project_id=project_id,
+            instruction=instruction,
+            api_key=settings.anthropic_api_key,
+            model=settings.model,
+        )
+
+    if result.success:
+        console.print(f"[green]Done![/green] Changed {len(result.files_changed)} file(s):")
+        for f in result.files_changed:
+            console.print(f"  {f}")
+        if result.summary:
+            console.print(f"\n{result.summary[:500]}")
+
+        if result.files_changed and typer.confirm("\nCreate a branch and commit these changes?"):
+            contrib = create_contribution(
+                project_id=project_id,
+                description=instruction,
+                files_changed=result.files_changed,
+            )
+            if contrib.success:
+                console.print(f"[green]{contrib.message}[/green]")
+            else:
+                console.print(f"[yellow]{contrib.message}[/yellow]")
+    else:
+        console.print(f"[red]Failed:[/red] {result.summary[:300]}")
+
+
+@app.command()
+def research(
+    question: str = typer.Argument(..., help="Question to research"),
+    project: str = typer.Option(None, "--project", "-p", help="Project context"),
+):
+    """Research a topic using the knowledge base and project context."""
+    _init_db_from_settings()
+    settings = get_settings()
+
+    if not settings.anthropic_api_key:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+        raise typer.Exit(1)
+
+    from spark.db.connection import get_session
+    from spark.db.models import Project, ProjectStatus
+    from spark.knowledge.indexer import init_chromadb
+    from spark.actions.researcher import research_topic
+
+    init_chromadb(settings.chromadb_path)
+
+    with get_session() as session:
+        if project:
+            p = session.query(Project).filter(Project.name == project).first()
+        else:
+            p = (
+                session.query(Project)
+                .filter(Project.status == ProjectStatus.ACTIVE.value)
+                .order_by(Project.last_activity_at.desc())
+                .first()
+            )
+
+        if not p:
+            console.print("[red]No project found.[/red]")
+            raise typer.Exit(1)
+
+        project_id = p.id
+        project_name = p.name
+
+    console.print(f"Researching for [cyan]{project_name}[/cyan]: {question}\n")
+
+    with console.status("Researching..."):
+        result = research_topic(
+            project_id=project_id,
+            question=question,
+            api_key=settings.anthropic_api_key,
+            model=settings.model,
+        )
+
+    if result.success:
+        console.print(result.summary)
+        if result.findings:
+            console.print(f"\n[dim]({len(result.findings)} sources referenced)[/dim]")
+    else:
+        console.print(f"[red]Research failed:[/red] {result.summary[:300]}")
+
+
 @app.command()
 def knowledge():
     """Show knowledge base stats."""

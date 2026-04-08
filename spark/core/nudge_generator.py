@@ -94,6 +94,7 @@ def generate_nudge(
     stall: StallResult,
     api_key: str,
     model: str = "claude-sonnet-4-20250514",
+    agency_level: str = "suggest",
 ) -> str | None:
     """Generate a nudge message for a stalled project.
 
@@ -130,6 +131,11 @@ def generate_nudge(
         hours_since_activity=stall.hours_since_activity,
         baseline_gap=stall.baseline_gap,
     )
+
+    # Add agency-level context if user has elevated permissions
+    if agency_level in ("light", "full"):
+        from spark.core.prompts.system import CONTRIBUTION_NUDGE_ADDENDUM
+        prompt += "\n\n" + CONTRIBUTION_NUDGE_ADDENDUM.format(agency_level=agency_level)
 
     try:
         client = anthropic.Anthropic(api_key=api_key)

@@ -27,6 +27,19 @@ from spark.knowledge.indexer import (
     init_chromadb,
 )
 from spark.knowledge.ingester import scan_knowledge_folder
+from spark.actions.authorization import (
+    approve_latest,
+    clear_expired,
+    format_proposal_message,
+    get_pending_proposals,
+    needs_approval,
+    propose_action,
+    reject_latest,
+)
+from spark.actions.code_generator import generate_code
+from spark.actions.github_ops import create_contribution
+from spark.actions.researcher import analyze_blocker, research_topic
+from spark.config import AgencyLevel
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +173,7 @@ class SparkDaemon:
             stall=stall,
             api_key=self.settings.anthropic_api_key,
             model=self.settings.model,
+            agency_level=self.settings.agency_level.value,
         )
 
         if nudge and self._delivery:
@@ -233,6 +247,14 @@ class SparkDaemon:
         if text.startswith("/"):
             return self._handle_command(text)
 
+        normalized = text.strip().lower()
+
+        # Handle action approval/rejection
+        if normalized in ("go", "yes", "approve", "do it", "ship it"):
+            return self._handle_approval()
+        if normalized in ("skip", "no", "nah", "pass", "reject"):
+            return self._handle_rejection()
+
         # Find the most recently nudged project to reply in context
         with get_session() as session:
             last_outbound = (
@@ -254,6 +276,67 @@ class SparkDaemon:
         )
         return reply
 
+    def _handle_approval(self) -> str:
+        """Handle user approving a pending action."""
+        proposal = approve_latest()
+        if not proposal:
+            return "Nothing pending to approve."
+
+        # Execute the approved action
+        return self._execute_action(proposal)
+
+    def _handle_rejection(self) -> str:
+        """Handle user rejecting a pending action."""
+        proposal = reject_latest()
+        if not proposal:
+            return "Nothing pending to skip."
+        return f"Skipped. I'll keep thinking about {proposal.project_name}."
+
+    def _execute_action(self, proposal) -> str:
+        """Execute an approved action proposal."""
+        from spark.db.models import TaskType
+
+        if proposal.action_type == TaskType.CODE_GEN.value:
+            result = generate_code(
+                project_id=proposal.project_id,
+                instruction=proposal.description,
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+            if result.success:
+                # If we have files changed, offer to create a branch
+                files_str = ", ".join(result.files_changed[:5])
+                msg = f"Done! Changed: {files_str}\n\n{result.summary[:300]}"
+
+                if result.files_changed:
+                    contrib = create_contribution(
+                        project_id=proposal.project_id,
+                        description=proposal.description,
+                        files_changed=result.files_changed,
+                    )
+                    if contrib.success:
+                        msg += f"\n\nPushed to branch: {contrib.details.get('branch', '?')}"
+                    else:
+                        msg += f"\n\nChanges are local (push failed: {contrib.message})"
+
+                return msg
+            else:
+                return f"Couldn't complete that: {result.summary[:200]}"
+
+        elif proposal.action_type == TaskType.RESEARCH.value:
+            result = research_topic(
+                project_id=proposal.project_id,
+                question=proposal.description,
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+            if result.success:
+                return result.summary[:1000]
+            else:
+                return f"Research didn't turn up much: {result.summary[:200]}"
+
+        return f"Executed: {proposal.description}"
+
     def _handle_command(self, command: str) -> str:
         """Handle slash commands from the messaging platform."""
         cmd = command.strip().split()[0].lower()
@@ -268,8 +351,25 @@ class SparkDaemon:
             return self._cmd_resume()
         elif cmd == "/knowledge":
             return self._cmd_knowledge()
+        elif cmd == "/do":
+            return self._cmd_do(command)
+        elif cmd == "/research":
+            return self._cmd_research(command)
+        elif cmd == "/pending":
+            return self._cmd_pending()
         else:
-            return f"Unknown command: {cmd}\n\nAvailable: /status, /projects, /knowledge, /pause, /resume"
+            return (
+                f"Unknown command: {cmd}\n\n"
+                "Available:\n"
+                "  /status - Project overview\n"
+                "  /projects - List projects\n"
+                "  /knowledge - Knowledge base stats\n"
+                "  /do <task> - Ask Spark to do something\n"
+                "  /research <question> - Research a topic\n"
+                "  /pending - Show pending proposals\n"
+                "  /pause - Silence Spark\n"
+                "  /resume - Resume nudges"
+            )
 
     def _cmd_status(self) -> str:
         summaries = build_cross_project_context()
@@ -319,6 +419,112 @@ class SparkDaemon:
             count = len(paused)
         return f"Resumed {count} project(s). Back in action."
 
+
+    def _cmd_do(self, command: str) -> str:
+        """Handle /do <task> - ask Spark to do work on a project."""
+        parts = command.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            return "Usage: /do <what to do>\nExample: /do stub out the auth endpoint"
+
+        instruction = parts[1]
+
+        # Find the most active/recently nudged project
+        with get_session() as session:
+            last_msg = (
+                session.query(Message)
+                .filter(Message.direction == MessageDirection.OUTBOUND.value)
+                .order_by(Message.sent_at.desc())
+                .first()
+            )
+            if last_msg and last_msg.project_id:
+                project = session.query(Project).filter(Project.id == last_msg.project_id).first()
+            else:
+                project = (
+                    session.query(Project)
+                    .filter(Project.status == ProjectStatus.ACTIVE.value)
+                    .order_by(Project.last_activity_at.desc())
+                    .first()
+                )
+
+            if not project:
+                return "No active projects. Use `spark init` to register one."
+
+            project_id = project.id
+            project_name = project.name
+
+        from spark.db.models import TaskType
+
+        # Check if approval is needed
+        if needs_approval(self.settings.agency_level, TaskType.CODE_GEN.value):
+            proposal = propose_action(
+                project_id=project_id,
+                project_name=project_name,
+                action_type=TaskType.CODE_GEN.value,
+                description=instruction,
+            )
+            return format_proposal_message(proposal)
+        else:
+            # Execute directly
+            result = generate_code(
+                project_id=project_id,
+                instruction=instruction,
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+            if result.success:
+                files_str = ", ".join(result.files_changed[:5])
+                msg = f"Done! Changed: {files_str}\n\n{result.summary[:300]}"
+                if result.files_changed:
+                    contrib = create_contribution(
+                        project_id=project_id,
+                        description=instruction,
+                        files_changed=result.files_changed,
+                    )
+                    if contrib.success:
+                        msg += f"\n\nPushed to branch: {contrib.details.get('branch', '?')}"
+                return msg
+            else:
+                return f"Couldn't do that: {result.summary[:200]}"
+
+    def _cmd_research(self, command: str) -> str:
+        """Handle /research <question> - research a topic."""
+        parts = command.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            return "Usage: /research <question>\nExample: /research best approach for auth tokens"
+
+        question = parts[1]
+
+        with get_session() as session:
+            project = (
+                session.query(Project)
+                .filter(Project.status == ProjectStatus.ACTIVE.value)
+                .order_by(Project.last_activity_at.desc())
+                .first()
+            )
+            if not project:
+                return "No active projects to research against."
+            project_id = project.id
+
+        result = research_topic(
+            project_id=project_id,
+            question=question,
+            api_key=self.settings.anthropic_api_key,
+            model=self.settings.model,
+        )
+        if result.success:
+            return result.summary[:1000]
+        return f"Research didn't work out: {result.summary[:200]}"
+
+    def _cmd_pending(self) -> str:
+        """Show pending action proposals."""
+        pending = get_pending_proposals()
+        if not pending:
+            return "No pending proposals."
+        lines = ["Pending proposals:\n"]
+        for i, p in enumerate(pending, 1):
+            lines.append(f"  {i}. [{p.action_type}] {p.project_name}: {p.description}")
+        lines.append("\nReply 'go' to approve the latest, or 'skip' to reject.")
+        return "\n".join(lines)
 
     def _cmd_knowledge(self) -> str:
         with get_session() as session:
