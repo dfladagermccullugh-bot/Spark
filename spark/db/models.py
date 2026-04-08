@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, time
 from enum import Enum
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -43,6 +43,7 @@ class MessageType(str, Enum):
     CONNECTION = "connection"
     CONTRIBUTION = "contribution"
     REPLY = "reply"
+    DIGEST = "digest"
 
 
 class MemoryType(str, Enum):
@@ -50,6 +51,7 @@ class MemoryType(str, Enum):
     FEEDBACK = "feedback"
     GOAL = "goal"
     RELATIONSHIP = "relationship"
+    PATTERN = "pattern"
 
 
 class TaskType(str, Enum):
@@ -146,6 +148,7 @@ class KnowledgeItem(Base):
     embedding_id: Mapped[str | None] = mapped_column(String, nullable=True)
     tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     relevance_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    enriched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -175,3 +178,37 @@ class AgentTask(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class NudgeFeedback(Base):
+    """Track whether nudges led to action (implicit feedback loop)."""
+
+    __tablename__ = "nudge_feedback"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    nudge_type: Mapped[str] = mapped_column(String, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    activity_resumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hours_to_action: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_replied: Mapped[bool] = mapped_column(Boolean, default=False)
+    was_effective: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    context_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class DigestRecord(Base):
+    """Track digests sent to avoid duplicates."""
+
+    __tablename__ = "digest_records"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    digest_type: Mapped[str] = mapped_column(String, nullable=False)  # "daily" or "weekly"
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id"), nullable=True
+    )
+    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    project_count: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
