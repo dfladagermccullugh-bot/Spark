@@ -80,8 +80,21 @@ class SparkDaemon:
                 bot_token=self.settings.telegram_bot_token,
                 chat_id=self.settings.telegram_chat_id,
             )
-            await self._delivery.start_listening(on_message=self._handle_incoming)
-            logger.info("Telegram delivery adapter started")
+            try:
+                await self._delivery.start_listening(on_message=self._handle_incoming)
+                logger.info("Telegram delivery adapter started")
+            except Exception as e:
+                error_msg = str(e)
+                if "InvalidToken" in type(e).__name__ or "Unauthorized" in error_msg:
+                    logger.error(
+                        "Telegram bot token was rejected. "
+                        "Check SPARK_TELEGRAM_BOT_TOKEN in your .env file. "
+                        "Get a valid token from @BotFather on Telegram."
+                    )
+                else:
+                    logger.error(f"Failed to connect to Telegram: {e}")
+                self._delivery = None
+                logger.warning("Continuing without Telegram delivery")
         else:
             logger.warning("No delivery adapter configured (set SPARK_TELEGRAM_BOT_TOKEN)")
 

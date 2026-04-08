@@ -293,11 +293,14 @@ def run():
     )
 
     console.print("[bold green]Starting Spark...[/bold green]")
+    console.print(f"  Model: {settings.model}")
     console.print(f"  Projects: {settings.projects_dir}")
     console.print(f"  Knowledge: {settings.knowledge_dir}")
     console.print(f"  Check interval: {settings.stall_check_interval_minutes}m")
     console.print(f"  Quiet hours: {settings.quiet_hours_start} - {settings.quiet_hours_end}")
     console.print(f"  Agency level: {settings.agency_level.value}")
+    if not settings.telegram_bot_token:
+        console.print("  [yellow]Telegram: not configured (set SPARK_TELEGRAM_BOT_TOKEN)[/yellow]")
     console.print()
 
     from spark.daemon import run_daemon
