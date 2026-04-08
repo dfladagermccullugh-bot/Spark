@@ -3,6 +3,9 @@
 When Spark wants to do something (write code, push a branch), it asks
 for permission first - unless the user has set agency_level to 'full'.
 This module manages pending proposals and their approval/rejection.
+
+Phase 4: Proposals are now persisted to the database via AgentTask
+records, so they survive daemon restarts.
 """
 
 from __future__ import annotations
@@ -47,8 +50,44 @@ class ActionProposal:
         self.created_at = datetime.utcnow()
 
 
-# In-memory store of pending proposals (single-user, so no persistence needed)
+# In-memory cache of proposals (backed by DB for persistence)
 _pending_proposals: list[ActionProposal] = []
+
+
+def _load_pending_from_db() -> None:
+    """Load pending proposals from the database on startup.
+
+    This allows proposals to survive daemon restarts.
+    """
+    from spark.db.models import Project
+
+    _pending_proposals.clear()
+
+    with get_session() as session:
+        pending_tasks = (
+            session.query(AgentTask)
+            .filter(AgentTask.status == TaskStatus.PENDING.value)
+            .order_by(AgentTask.created_at.asc())
+            .all()
+        )
+
+        for task in pending_tasks:
+            project = session.query(Project).filter(Project.id == task.project_id).first()
+            project_name = project.name if project else "Unknown"
+
+            proposal = ActionProposal(
+                project_id=task.project_id,
+                project_name=project_name,
+                action_type=task.task_type,
+                description=task.description,
+                details=task.result.get("details", "") if task.result else "",
+                task_id=task.id,
+            )
+            proposal.created_at = task.created_at
+            _pending_proposals.append(proposal)
+
+    if _pending_proposals:
+        logger.info(f"Loaded {len(_pending_proposals)} pending proposals from database")
 
 
 def needs_approval(agency_level: AgencyLevel, action_type: str) -> bool:
@@ -76,13 +115,14 @@ def propose_action(
     details: str = "",
 ) -> ActionProposal:
     """Create a proposal for an action and store it for approval."""
-    # Create a pending task record
+    # Create a pending task record in DB
     with get_session() as session:
         task = AgentTask(
             project_id=project_id,
             task_type=action_type,
             description=description,
             status=TaskStatus.PENDING.value,
+            result={"details": details} if details else None,
         )
         session.add(task)
         session.flush()
@@ -165,12 +205,26 @@ def reject_latest() -> ActionProposal | None:
 
 
 def clear_expired(max_age_hours: float = 24.0) -> int:
-    """Clear proposals older than max_age_hours."""
+    """Clear proposals older than max_age_hours.
+
+    Also marks expired tasks in the database.
+    """
     cutoff = datetime.utcnow()
     cleared = 0
     for proposal in _pending_proposals[:]:
         age_hours = (cutoff - proposal.created_at).total_seconds() / 3600
         if age_hours > max_age_hours and proposal.status == ProposalStatus.PENDING:
             proposal.status = ProposalStatus.EXPIRED
+
+            # Also update DB record
+            if proposal.task_id:
+                with get_session() as session:
+                    task = session.query(AgentTask).filter(
+                        AgentTask.id == proposal.task_id
+                    ).first()
+                    if task:
+                        task.status = TaskStatus.FAILED.value
+                        task.completed_at = cutoff
+
             cleared += 1
     return cleared

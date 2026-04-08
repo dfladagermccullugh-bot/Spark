@@ -45,6 +45,12 @@ class SparkSettings(BaseSettings):
     min_hours_between_nudges: float = 4.0
     stall_threshold_multiplier: float = 2.0
 
+    # Phase 4: Intelligence
+    daily_digest_enabled: bool = True
+    weekly_digest_enabled: bool = True
+    enrich_knowledge: bool = True
+    learn_from_conversations: bool = True
+
     # LLM
     model: str = "claude-sonnet-4-20250514"
 

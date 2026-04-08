@@ -9,6 +9,8 @@ from datetime import datetime
 import anthropic
 
 from spark.core.context_engine import build_cross_project_context, build_project_context
+from spark.core.feedback import get_feedback_context, record_nudge_sent
+from spark.core.memory import get_memory_context
 from spark.knowledge.connector import get_knowledge_context_for_project
 from spark.core.prompts.system import (
     NUDGE_PROMPT_TEMPLATE,
@@ -116,6 +118,10 @@ def generate_nudge(
             status_note = f" ({p['hours_since_activity']:.0f}h since activity)" if p.get("hours_since_activity") else ""
             cross_section += f"- {p['name']}: {p['description']}{status_note}\n"
 
+    # Memory and feedback context for smarter nudges
+    memory_section = get_memory_context(max_items=5)
+    feedback_section = get_feedback_context()
+
     # Build the prompt
     prompt = NUDGE_PROMPT_TEMPLATE.format(
         project_name=context["project_name"],
@@ -131,6 +137,12 @@ def generate_nudge(
         hours_since_activity=stall.hours_since_activity,
         baseline_gap=stall.baseline_gap,
     )
+
+    # Add memory and feedback context
+    if memory_section:
+        prompt += "\n\n" + memory_section
+    if feedback_section:
+        prompt += "\n\n" + feedback_section
 
     # Add agency-level context if user has elevated permissions
     if agency_level in ("light", "full"):
@@ -158,6 +170,11 @@ def generate_nudge(
                 sent_at=datetime.utcnow(),
             )
             session.add(msg)
+            session.flush()
+            msg_id = msg.id
+
+        # Track nudge for feedback loop
+        record_nudge_sent(msg_id, stall.project_id, MessageType.NUDGE.value)
 
         logger.info(f"Generated nudge for {stall.project_name}: {nudge_text[:80]}...")
         return nudge_text

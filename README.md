@@ -2,9 +2,9 @@
 
 Your AI co-founder. Built for solo-preneurs and developers who thrive on collaborative energy.
 
-Spark bridges the gap between passive AI and active partnership. It monitors your projects, builds a living knowledge base, makes connections across your work and interests, and reaches out via Telegram like a motivated co-founder who's been thinking about your stuff. It can even write code, push branches, and research blockers for you.
+Spark bridges the gap between passive AI and active partnership. It monitors your projects, builds a living knowledge base, makes connections across your work and interests, and reaches out via Telegram like a motivated co-founder who's been thinking about your stuff. It writes code, pushes branches, researches blockers, and gets smarter the more you interact with it.
 
-**This is not a reminder app.** Spark brings ideas, contributions, and momentum.
+**This is not a reminder app.** Spark brings ideas, contributions, and momentum. It learns what works for you and adapts.
 
 ## How It Works
 
@@ -13,6 +13,7 @@ Spark bridges the gap between passive AI and active partnership. It monitors you
 3. **Spark learns your rhythm** - commit frequency, active hours, day-of-week patterns
 4. **When things stall, Spark reaches out** - via Telegram with a specific idea, a connection between your saved knowledge and your project, or a ready-to-submit code contribution
 5. **Tell Spark to do things** - ask it to stub out an endpoint, research a blocker, or draft a test file, and it will create a branch with the work done
+6. **Spark learns and adapts** - tracks which nudges lead to action, remembers your preferences, sends daily/weekly project digests, and enriches your knowledge base by fetching URL content
 
 A reminder app says: *"You haven't committed in 2 days."*
 
@@ -55,6 +56,10 @@ Set these in your `.env` file:
 | `SPARK_TIMEZONE` | No | Your timezone (default: `UTC`) |
 | `SPARK_AGENCY_LEVEL` | No | `suggest`, `light`, or `full` (default: `suggest`) |
 | `SPARK_MAX_DAILY_NUDGES` | No | Max messages per day (default: `3`) |
+| `SPARK_DAILY_DIGEST_ENABLED` | No | Enable daily project digest (default: `true`) |
+| `SPARK_WEEKLY_DIGEST_ENABLED` | No | Enable weekly retrospective (default: `true`) |
+| `SPARK_ENRICH_KNOWLEDGE` | No | Auto-fetch URL content for bookmarks (default: `true`) |
+| `SPARK_LEARN_FROM_CONVERSATIONS` | No | Extract preferences from chats (default: `true`) |
 
 ## Agency Levels
 
@@ -95,6 +100,15 @@ Controls how much Spark can do on its own:
 | `spark do <instruction>` | Ask Spark to write code on a project |
 | `spark research <question>` | Research a topic using knowledge base + project context |
 
+### Intelligence
+
+| Command | Description |
+|---|---|
+| `spark digest` | Get a project digest right now |
+| `spark memories` | Show what Spark has learned about you |
+| `spark effectiveness` | Show nudge effectiveness statistics |
+| `spark enrich` | Fetch and summarize URL content for knowledge items |
+
 ## Telegram Commands
 
 Once running, interact with Spark via Telegram:
@@ -107,6 +121,9 @@ Once running, interact with Spark via Telegram:
 | `/do <task>` | Ask Spark to write code |
 | `/research <question>` | Research a topic |
 | `/pending` | Show proposals awaiting approval |
+| `/digest` | Get a project digest now |
+| `/memories` | What Spark has learned about you |
+| `/effectiveness` | Nudge effectiveness stats |
 | `/pause` | Silence Spark |
 | `/resume` | Resume nudges |
 | `go` | Approve a pending proposal |
@@ -121,11 +138,12 @@ Or just reply to any message to continue the conversation.
 | Signal Ingestion    |     | Knowledge Engine   |     | Delivery Layer    |
 |                     |     |                    |     |                   |
 | - Git activity      |---->| - ChromaDB vectors |---->| - Telegram bot    |
-| - File watcher      |     | - Semantic search  |     |                   |
-| - Knowledge folder  |     | - Cross-project    |     +-------------------+
-| - Browser bookmarks |     |   connections      |            ^
-| - YouTube / Twitter |     +--------------------+            |
-+---------------------+            |                          |
+| - File watcher      |     | - Semantic search  |     | - Daily digest    |
+| - Knowledge folder  |     | - Cross-project    |     | - Weekly retro    |
+| - Browser bookmarks |     |   connections      |     +-------------------+
+| - YouTube / Twitter |     | - URL enrichment   |            ^
++---------------------+     +--------------------+            |
+                                    |                          |
                              +--------------------+           |
                              | Spark Core         |-----------+
                              |                    |
@@ -137,13 +155,24 @@ Or just reply to any message to continue the conversation.
                              |   persona          |     | - Git branch/push |
                              +--------------------+     | - Research        |
                                     |                   | - Authorization   |
-                                    v                   +-------------------+
+                             +--------------------+     |   (persistent)    |
+                             | Learning Brain     |     +-------------------+
+                             |                    |
+                             | - Memory system    |
+                             | - Feedback loop    |
+                             | - Effectiveness    |
+                             |   tracking         |
+                             +--------------------+
+                                    |
+                                    v
                              +--------------------+
                              | Data Store         |
                              |                    |
                              | - SQLite (projects,|
                              |   events, messages,|
-                             |   knowledge, tasks)|
+                             |   knowledge, tasks,|
+                             |   memories,        |
+                             |   feedback)        |
                              | - ChromaDB         |
                              |   (embeddings)     |
                              +--------------------+

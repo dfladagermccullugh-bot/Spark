@@ -14,12 +14,16 @@ from spark.collectors.file_watcher import SparkFileWatcher
 from spark.collectors.git_collector import collect_git_activity
 from spark.config import SparkSettings
 from spark.core.context_engine import build_cross_project_context
+from spark.core.digest import generate_daily_digest, generate_weekly_digest
+from spark.core.feedback import check_nudge_effectiveness, get_effectiveness_stats
+from spark.core.memory import process_conversation_for_memories, recall_memories
 from spark.core.nudge_generator import generate_nudge, generate_reply
 from spark.core.rhythm import update_project_baselines
 from spark.core.stall_detector import detect_stalls
 from spark.db.connection import get_session, init_db
 from spark.db.models import KnowledgeItem, Message, MessageDirection, Project, ProjectStatus
 from spark.knowledge.connector import update_relevance_scores
+from spark.knowledge.enricher import enrich_knowledge_items
 from spark.knowledge.feeds import auto_detect_and_import
 from spark.knowledge.indexer import (
     index_knowledge_items,
@@ -28,6 +32,7 @@ from spark.knowledge.indexer import (
 )
 from spark.knowledge.ingester import scan_knowledge_folder
 from spark.actions.authorization import (
+    _load_pending_from_db,
     approve_latest,
     clear_expired,
     format_proposal_message,
@@ -62,6 +67,9 @@ class SparkDaemon:
         self.settings.ensure_dirs()
         init_db(self.settings.db_path)
         init_chromadb(self.settings.chromadb_path)
+
+        # Restore pending proposals from database
+        _load_pending_from_db()
 
         # Initialize delivery adapter
         if self.settings.telegram_bot_token and self.settings.telegram_chat_id:
@@ -117,6 +125,45 @@ class SparkDaemon:
             "interval",
             hours=3,
             id="update_relevance",
+        )
+        # Phase 4: Learning & intelligence jobs
+        self._scheduler.add_job(
+            self._check_feedback,
+            "interval",
+            hours=1,
+            id="check_feedback",
+        )
+        self._scheduler.add_job(
+            self._extract_memories,
+            "interval",
+            hours=2,
+            id="extract_memories",
+        )
+        self._scheduler.add_job(
+            self._enrich_knowledge,
+            "interval",
+            hours=1,
+            id="enrich_knowledge",
+        )
+        self._scheduler.add_job(
+            self._send_daily_digest,
+            "cron",
+            hour=int(self.settings.quiet_hours_end.split(":")[0]),
+            minute=30,
+            id="daily_digest",
+        )
+        self._scheduler.add_job(
+            self._send_weekly_digest,
+            "cron",
+            day_of_week="sun",
+            hour=10,
+            id="weekly_digest",
+        )
+        self._scheduler.add_job(
+            self._clear_expired_proposals,
+            "interval",
+            hours=6,
+            id="clear_expired",
         )
         self._scheduler.start()
 
@@ -241,6 +288,68 @@ class SparkDaemon:
         if updated:
             logger.info(f"Updated relevance scores for {updated} items")
 
+    def _check_feedback(self) -> None:
+        """Check nudge effectiveness based on resumed activity."""
+        logger.debug("Checking nudge feedback...")
+        updated = check_nudge_effectiveness()
+        if updated:
+            logger.info(f"Updated feedback for {updated} nudges")
+
+    def _extract_memories(self) -> None:
+        """Extract memories from recent conversations."""
+        if not self.settings.anthropic_api_key:
+            return
+        logger.debug("Extracting memories from conversations...")
+        stored = process_conversation_for_memories(
+            api_key=self.settings.anthropic_api_key,
+            model=self.settings.model,
+        )
+        if stored:
+            logger.info(f"Extracted {stored} new memories")
+
+    def _enrich_knowledge(self) -> None:
+        """Fetch and summarize URL content for knowledge items."""
+        if not self.settings.anthropic_api_key:
+            return
+        logger.debug("Enriching knowledge items...")
+        enriched = enrich_knowledge_items(
+            api_key=self.settings.anthropic_api_key,
+            model=self.settings.model,
+            batch_size=3,
+        )
+        if enriched:
+            logger.info(f"Enriched {enriched} knowledge items")
+
+    def _send_daily_digest(self) -> None:
+        """Send the daily project digest."""
+        if not self.settings.anthropic_api_key or not self._delivery:
+            return
+        logger.info("Generating daily digest...")
+        digest = generate_daily_digest(
+            api_key=self.settings.anthropic_api_key,
+            model=self.settings.model,
+        )
+        if digest:
+            asyncio.get_event_loop().create_task(self._delivery.send(digest))
+
+    def _send_weekly_digest(self) -> None:
+        """Send the weekly retrospective digest."""
+        if not self.settings.anthropic_api_key or not self._delivery:
+            return
+        logger.info("Generating weekly digest...")
+        digest = generate_weekly_digest(
+            api_key=self.settings.anthropic_api_key,
+            model=self.settings.model,
+        )
+        if digest:
+            asyncio.get_event_loop().create_task(self._delivery.send(digest))
+
+    def _clear_expired_proposals(self) -> None:
+        """Clear proposals that have been pending too long."""
+        cleared = clear_expired(max_age_hours=24.0)
+        if cleared:
+            logger.info(f"Cleared {cleared} expired proposals")
+
     def _handle_incoming(self, text: str) -> str | None:
         """Handle an incoming message from the user."""
         # Handle commands
@@ -357,6 +466,12 @@ class SparkDaemon:
             return self._cmd_research(command)
         elif cmd == "/pending":
             return self._cmd_pending()
+        elif cmd == "/digest":
+            return self._cmd_digest()
+        elif cmd == "/memories":
+            return self._cmd_memories()
+        elif cmd == "/effectiveness":
+            return self._cmd_effectiveness()
         else:
             return (
                 f"Unknown command: {cmd}\n\n"
@@ -367,6 +482,9 @@ class SparkDaemon:
                 "  /do <task> - Ask Spark to do something\n"
                 "  /research <question> - Research a topic\n"
                 "  /pending - Show pending proposals\n"
+                "  /digest - Get a project digest now\n"
+                "  /memories - What Spark has learned about you\n"
+                "  /effectiveness - Nudge effectiveness stats\n"
                 "  /pause - Silence Spark\n"
                 "  /resume - Resume nudges"
             )
@@ -548,6 +666,57 @@ class SparkDaemon:
         lines = [f"Knowledge base: {total} items ({indexed} indexed)\n"]
         for stype, count in sorted(by_type.items()):
             lines.append(f"  {stype}: {count}")
+        return "\n".join(lines)
+
+    def _cmd_digest(self) -> str:
+        """Generate and return a digest on demand."""
+        if not self.settings.anthropic_api_key:
+            return "API key not configured."
+
+        digest = generate_daily_digest(
+            api_key=self.settings.anthropic_api_key,
+            model=self.settings.model,
+        )
+        if digest:
+            return digest
+        return "Couldn't generate a digest right now. Maybe one was already sent today."
+
+    def _cmd_memories(self) -> str:
+        """Show what Spark has learned about the user."""
+        memories = recall_memories(limit=15)
+        if not memories:
+            return "I haven't learned anything specific about you yet. Keep chatting - I'll pick up on your preferences over time."
+
+        lines = ["Here's what I've learned about you:\n"]
+        for m in memories:
+            lines.append(f"  [{m['type']}] {m['content']}")
+        return "\n".join(lines)
+
+    def _cmd_effectiveness(self) -> str:
+        """Show nudge effectiveness stats."""
+        stats = get_effectiveness_stats()
+        if stats["total_nudges"] == 0:
+            return "No nudge data yet. I need to send a few nudges before I can track effectiveness."
+
+        rate = stats["effectiveness_rate"] * 100
+        reply_rate = stats["reply_rate"] * 100
+        lines = [
+            "Nudge effectiveness:\n",
+            f"  Total nudges: {stats['total_nudges']}",
+            f"  Effective: {stats['effective_count']} ({rate:.0f}%)",
+            f"  No action: {stats['ineffective_count']}",
+            f"  Pending: {stats['pending_count']}",
+            f"  Avg time to action: {stats['avg_hours_to_action']:.1f}h",
+            f"  Reply rate: {reply_rate:.0f}%",
+        ]
+
+        by_type = stats.get("by_type", {})
+        if by_type:
+            lines.append("\nBy type:")
+            for ntype, data in by_type.items():
+                type_rate = data["rate"] * 100
+                lines.append(f"  {ntype}: {data['effective']}/{data['total']} ({type_rate:.0f}%)")
+
         return "\n".join(lines)
 
 

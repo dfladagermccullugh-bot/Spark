@@ -590,6 +590,130 @@ def search_knowledge_cmd(
             console.print(f"   {preview}")
 
 
+@app.command()
+def digest():
+    """Get a project digest right now."""
+    _init_db_from_settings()
+    settings = get_settings()
+
+    if not settings.anthropic_api_key:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+        raise typer.Exit(1)
+
+    from spark.knowledge.indexer import init_chromadb
+    from spark.core.digest import generate_daily_digest
+
+    init_chromadb(settings.chromadb_path)
+
+    with console.status("Generating digest..."):
+        text = generate_daily_digest(
+            api_key=settings.anthropic_api_key,
+            model=settings.model,
+        )
+
+    if text:
+        console.print(text)
+    else:
+        console.print("[yellow]No digest generated (maybe already sent today, or no projects tracked).[/yellow]")
+
+
+@app.command()
+def memories():
+    """Show what Spark has learned about you."""
+    _init_db_from_settings()
+    from spark.core.memory import recall_memories
+
+    mems = recall_memories(limit=20)
+    if not mems:
+        console.print("Spark hasn't learned anything specific yet.")
+        console.print("Keep interacting - it picks up on your preferences over time.")
+        return
+
+    table = Table(title="What Spark Knows About You")
+    table.add_column("Type", style="cyan")
+    table.add_column("Memory")
+    table.add_column("Learned", style="dim")
+
+    for m in mems:
+        table.add_row(m["type"], m["content"], m.get("created_at", "")[:10])
+
+    console.print(table)
+
+
+@app.command()
+def effectiveness():
+    """Show nudge effectiveness statistics."""
+    _init_db_from_settings()
+    from spark.core.feedback import get_effectiveness_stats
+
+    stats = get_effectiveness_stats()
+
+    if stats["total_nudges"] == 0:
+        console.print("No nudge data yet. Run the daemon and let Spark send some nudges first.")
+        return
+
+    table = Table(title="Nudge Effectiveness")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value")
+
+    rate = stats["effectiveness_rate"] * 100
+    reply_rate = stats["reply_rate"] * 100
+
+    table.add_row("Total nudges", str(stats["total_nudges"]))
+    table.add_row("Effective", f"{stats['effective_count']} ({rate:.0f}%)")
+    table.add_row("No action", str(stats["ineffective_count"]))
+    table.add_row("Pending", str(stats["pending_count"]))
+    table.add_row("Avg time to action", f"{stats['avg_hours_to_action']:.1f}h")
+    table.add_row("Reply rate", f"{reply_rate:.0f}%")
+
+    console.print(table)
+
+    by_type = stats.get("by_type", {})
+    if by_type:
+        type_table = Table(title="By Nudge Type")
+        type_table.add_column("Type", style="cyan")
+        type_table.add_column("Effective")
+        type_table.add_column("Total")
+        type_table.add_column("Rate")
+
+        for ntype, data in by_type.items():
+            type_table.add_row(
+                ntype,
+                str(data["effective"]),
+                str(data["total"]),
+                f"{data['rate'] * 100:.0f}%",
+            )
+
+        console.print(type_table)
+
+
+@app.command(name="enrich")
+def enrich_cmd(
+    batch: int = typer.Option(5, "--batch", "-b", help="Number of items to enrich per run"),
+):
+    """Fetch and summarize URL content for knowledge items."""
+    _init_db_from_settings()
+    settings = get_settings()
+
+    if not settings.anthropic_api_key:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+        raise typer.Exit(1)
+
+    from spark.knowledge.enricher import enrich_knowledge_items
+
+    with console.status("Enriching knowledge items..."):
+        enriched = enrich_knowledge_items(
+            api_key=settings.anthropic_api_key,
+            model=settings.model,
+            batch_size=batch,
+        )
+
+    if enriched:
+        console.print(f"[green]Enriched {enriched} knowledge item(s) with content summaries[/green]")
+    else:
+        console.print("No items to enrich (all URLs already processed or no URLs found).")
+
+
 def _run_index():
     """Index newly imported items into ChromaDB."""
     settings = get_settings()
