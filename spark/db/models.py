@@ -66,6 +66,14 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
+class SourceType(str, Enum):
+    FILE = "file"
+    BOOKMARK = "bookmark"
+    YOUTUBE = "youtube"
+    TWITTER = "twitter"
+    NOTE = "note"
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -124,6 +132,21 @@ class Message(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     project: Mapped[Project | None] = relationship(back_populates="messages")
+
+
+class KnowledgeItem(Base):
+    __tablename__ = "knowledge_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    source_type: Mapped[str] = mapped_column(String, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    content_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_content_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    embedding_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    relevance_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class AgentMemory(Base):

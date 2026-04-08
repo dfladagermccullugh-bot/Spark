@@ -9,6 +9,7 @@ from datetime import datetime
 import anthropic
 
 from spark.core.context_engine import build_cross_project_context, build_project_context
+from spark.knowledge.connector import get_knowledge_context_for_project
 from spark.core.prompts.system import (
     NUDGE_PROMPT_TEMPLATE,
     REPLY_PROMPT_TEMPLATE,
@@ -124,7 +125,7 @@ def generate_nudge(
         file_tree=context.get("file_tree", "Not available")[:2000],
         key_files=_format_key_files(context),
         cross_project_section=cross_section,
-        knowledge_section="",  # Phase 2: knowledge engine integration
+        knowledge_section=get_knowledge_context_for_project(stall.project_id),
         previous_messages=_format_previous_messages(context),
         hours_since_activity=stall.hours_since_activity,
         baseline_gap=stall.baseline_gap,

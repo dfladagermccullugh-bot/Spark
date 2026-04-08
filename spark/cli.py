@@ -322,5 +322,158 @@ def goal(
         console.print(f"Updated goal for [cyan]{p.name}[/cyan]: {text}")
 
 
+@app.command()
+def knowledge():
+    """Show knowledge base stats."""
+    _init_db_from_settings()
+    from spark.db.connection import get_session
+    from spark.db.models import KnowledgeItem
+
+    with get_session() as session:
+        items = session.query(KnowledgeItem).all()
+        if not items:
+            console.print("Knowledge base is empty.")
+            console.print("\nDrop files into your knowledge folder or use import commands:")
+            console.print("  spark import-bookmarks <file>")
+            console.print("  spark import-youtube <file>")
+            console.print("  spark import-twitter <file>")
+            return
+
+        table = Table(title="Knowledge Base")
+        table.add_column("Type", style="cyan")
+        table.add_column("Count")
+        table.add_column("Indexed")
+
+        by_type: dict[str, dict] = {}
+        for item in items:
+            entry = by_type.setdefault(item.source_type, {"total": 0, "indexed": 0})
+            entry["total"] += 1
+            if item.embedding_id:
+                entry["indexed"] += 1
+
+        for stype, counts in sorted(by_type.items()):
+            table.add_row(
+                stype,
+                str(counts["total"]),
+                str(counts["indexed"]),
+            )
+
+        console.print(table)
+        console.print(f"\nTotal: {len(items)} items")
+
+
+@app.command(name="import-bookmarks")
+def import_bookmarks(
+    file: str = typer.Argument(..., help="Path to bookmarks file (Chrome/Firefox JSON or HTML)"),
+):
+    """Import browser bookmarks from an export file."""
+    _init_db_from_settings()
+    from spark.knowledge.feeds import import_chrome_bookmarks, import_firefox_bookmarks
+
+    path = Path(file).resolve()
+    if not path.exists():
+        console.print(f"[red]File not found: {path}[/red]")
+        raise typer.Exit(1)
+
+    # Try Chrome format first, then Firefox
+    import json
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if "roots" in data:
+            count = import_chrome_bookmarks(path)
+            console.print(f"[green]Imported {count} Chrome bookmarks[/green]")
+        else:
+            count = import_firefox_bookmarks(path)
+            console.print(f"[green]Imported {count} Firefox bookmarks[/green]")
+    except json.JSONDecodeError:
+        # Try HTML bookmark format via ingester
+        from spark.knowledge.ingester import ingest_file
+        from spark.db.connection import get_session
+        from spark.db.models import KnowledgeItem
+
+        items = ingest_file(path)
+        with get_session() as session:
+            for item in items:
+                session.add(item)
+        console.print(f"[green]Imported {len(items)} bookmarks from HTML[/green]")
+
+    _run_index()
+
+
+@app.command(name="import-youtube")
+def import_youtube(
+    file: str = typer.Argument(..., help="Path to YouTube export (CSV, JSON, or HTML)"),
+):
+    """Import YouTube likes/history from a Google Takeout export."""
+    _init_db_from_settings()
+    from spark.knowledge.feeds import import_youtube_takeout
+
+    path = Path(file).resolve()
+    if not path.exists():
+        console.print(f"[red]File not found: {path}[/red]")
+        raise typer.Exit(1)
+
+    count = import_youtube_takeout(path)
+    console.print(f"[green]Imported {count} YouTube items[/green]")
+    _run_index()
+
+
+@app.command(name="import-twitter")
+def import_twitter(
+    file: str = typer.Argument(..., help="Path to Twitter/X bookmarks export"),
+):
+    """Import Twitter/X bookmarks from a data export."""
+    _init_db_from_settings()
+    from spark.knowledge.feeds import import_twitter_bookmarks
+
+    path = Path(file).resolve()
+    if not path.exists():
+        console.print(f"[red]File not found: {path}[/red]")
+        raise typer.Exit(1)
+
+    count = import_twitter_bookmarks(path)
+    console.print(f"[green]Imported {count} Twitter bookmarks[/green]")
+    _run_index()
+
+
+@app.command(name="search-knowledge")
+def search_knowledge_cmd(
+    query: str = typer.Argument(..., help="Search query"),
+    n: int = typer.Option(5, "--results", "-n", help="Number of results"),
+):
+    """Search your knowledge base."""
+    _init_db_from_settings()
+    settings = get_settings()
+    from spark.knowledge.indexer import init_chromadb, search_knowledge
+
+    init_chromadb(settings.chromadb_path)
+
+    results = search_knowledge(query, n_results=n)
+    if not results:
+        console.print("No results found. Make sure your knowledge base is indexed.")
+        return
+
+    for i, r in enumerate(results, 1):
+        dist = f" (distance: {r['distance']:.2f})" if r.get('distance') is not None else ""
+        console.print(f"\n[bold]{i}. {r['title']}[/bold]{dist}")
+        console.print(f"   Type: {r['source_type']}")
+        if r.get("source_url"):
+            console.print(f"   URL: {r['source_url']}")
+        if r.get("content"):
+            preview = r["content"][:150].replace("\n", " ")
+            console.print(f"   {preview}")
+
+
+def _run_index():
+    """Index newly imported items into ChromaDB."""
+    settings = get_settings()
+    from spark.knowledge.indexer import init_chromadb, index_knowledge_items
+
+    init_chromadb(settings.chromadb_path)
+    indexed = index_knowledge_items()
+    if indexed:
+        console.print(f"  Indexed {indexed} items into vector store")
+
+
 if __name__ == "__main__":
     app()
