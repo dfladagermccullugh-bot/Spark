@@ -18,7 +18,15 @@ from spark.core.nudge_generator import generate_nudge, generate_reply
 from spark.core.rhythm import update_project_baselines
 from spark.core.stall_detector import detect_stalls
 from spark.db.connection import get_session, init_db
-from spark.db.models import Message, MessageDirection, Project, ProjectStatus
+from spark.db.models import KnowledgeItem, Message, MessageDirection, Project, ProjectStatus
+from spark.knowledge.connector import update_relevance_scores
+from spark.knowledge.feeds import auto_detect_and_import
+from spark.knowledge.indexer import (
+    index_knowledge_items,
+    index_project_files,
+    init_chromadb,
+)
+from spark.knowledge.ingester import scan_knowledge_folder
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +45,10 @@ class SparkDaemon:
         """Start the Spark daemon."""
         logger.info("Starting Spark daemon...")
 
-        # Initialize database
+        # Initialize database and vector store
         self.settings.ensure_dirs()
         init_db(self.settings.db_path)
+        init_chromadb(self.settings.chromadb_path)
 
         # Initialize delivery adapter
         if self.settings.telegram_bot_token and self.settings.telegram_chat_id:
@@ -82,6 +91,19 @@ class SparkDaemon:
             "interval",
             hours=6,
             id="update_baselines",
+        )
+        self._scheduler.add_job(
+            self._ingest_and_index_knowledge,
+            "interval",
+            minutes=15,
+            id="ingest_knowledge",
+            next_run_time=datetime.utcnow(),
+        )
+        self._scheduler.add_job(
+            self._update_relevance,
+            "interval",
+            hours=3,
+            id="update_relevance",
         )
         self._scheduler.start()
 
@@ -164,7 +186,46 @@ class SparkDaemon:
     def _on_new_knowledge(self, file_path: str) -> None:
         """Callback when a new knowledge item is added."""
         logger.info(f"New knowledge item detected: {file_path}")
-        # Phase 2: ingest and index the knowledge item
+        from pathlib import Path
+
+        # Try auto-detecting external feed exports
+        path = Path(file_path)
+        imported = auto_detect_and_import(path)
+        if imported:
+            logger.info(f"Auto-imported {imported} items from {path.name}")
+
+        # Run a quick ingest + index cycle
+        self._ingest_and_index_knowledge()
+
+    def _ingest_and_index_knowledge(self) -> None:
+        """Scan knowledge folder, ingest new items, and index them."""
+        logger.debug("Ingesting knowledge...")
+        new_items = scan_knowledge_folder(self.settings.knowledge_dir)
+        if new_items:
+            logger.info(f"Ingested {len(new_items)} new knowledge items")
+
+        indexed = index_knowledge_items()
+        if indexed:
+            logger.info(f"Indexed {indexed} knowledge items into vector store")
+
+        # Also index project files
+        with get_session() as session:
+            projects = (
+                session.query(Project)
+                .filter(Project.status == ProjectStatus.ACTIVE.value)
+                .all()
+            )
+            project_data = [(p.id, p.local_path) for p in projects]
+
+        for pid, ppath in project_data:
+            index_project_files(pid, ppath)
+
+    def _update_relevance(self) -> None:
+        """Update relevance scores between knowledge items and projects."""
+        logger.debug("Updating knowledge relevance scores...")
+        updated = update_relevance_scores()
+        if updated:
+            logger.info(f"Updated relevance scores for {updated} items")
 
     def _handle_incoming(self, text: str) -> str | None:
         """Handle an incoming message from the user."""
@@ -205,8 +266,10 @@ class SparkDaemon:
             return self._cmd_pause()
         elif cmd == "/resume":
             return self._cmd_resume()
+        elif cmd == "/knowledge":
+            return self._cmd_knowledge()
         else:
-            return f"Unknown command: {cmd}\n\nAvailable: /status, /projects, /pause, /resume"
+            return f"Unknown command: {cmd}\n\nAvailable: /status, /projects, /knowledge, /pause, /resume"
 
     def _cmd_status(self) -> str:
         summaries = build_cross_project_context()
@@ -255,6 +318,31 @@ class SparkDaemon:
                 p.status = ProjectStatus.ACTIVE.value
             count = len(paused)
         return f"Resumed {count} project(s). Back in action."
+
+
+    def _cmd_knowledge(self) -> str:
+        with get_session() as session:
+            total = session.query(KnowledgeItem).count()
+            indexed = session.query(KnowledgeItem).filter(
+                KnowledgeItem.embedding_id.isnot(None)
+            ).count()
+            by_type = {}
+            for item in session.query(KnowledgeItem).all():
+                by_type[item.source_type] = by_type.get(item.source_type, 0) + 1
+
+        if total == 0:
+            return (
+                "No knowledge items yet.\n\n"
+                "Drop files into your knowledge folder, or use:\n"
+                "  spark import-bookmarks <file>\n"
+                "  spark import-youtube <file>\n"
+                "  spark import-twitter <file>"
+            )
+
+        lines = [f"Knowledge base: {total} items ({indexed} indexed)\n"]
+        for stype, count in sorted(by_type.items()):
+            lines.append(f"  {stype}: {count}")
+        return "\n".join(lines)
 
 
 async def run_daemon(settings: SparkSettings) -> None:
