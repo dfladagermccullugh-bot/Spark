@@ -21,45 +21,165 @@ Spark says: *"I was looking at your auth module and that article you bookmarked 
 
 ## Quick Start
 
+Already have Python 3.11+ and know your way around? Here's the 60-second version:
+
 ```bash
-# Install
+git clone https://github.com/dfladagermccullugh-bot/Spark.git
+cd Spark
+pip install -e .
+cp .env.example .env          # then edit with your API keys (see below)
+spark init ~/projects/my-app --desc "SaaS dashboard" --goal "Ship billing"
+spark run
+```
+
+## Full Installation
+
+### Prerequisites
+
+- **Python 3.11+** (`python3 --version` to check)
+- **Git** (for project activity tracking)
+- **A Claude API key** from [console.anthropic.com](https://console.anthropic.com/)
+- **A Telegram bot** (setup instructions below)
+
+### Step 1: Clone and install
+
+```bash
+git clone https://github.com/dfladagermccullugh-bot/Spark.git
+cd Spark
 pip install -e .
 
-# Configure (copy and edit)
-cp .env.example .env
+# Verify it works
+spark --help
+```
 
-# Register a project
+To install development dependencies (for running tests):
+
+```bash
+pip install -e ".[dev]"
+```
+
+### Step 2: Set up Telegram
+
+Spark communicates with you via Telegram. You need a bot token and your chat ID.
+
+**Create a bot:**
+1. Open Telegram and message [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` and follow the prompts to name your bot
+3. Copy the **bot token** (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
+
+**Get your chat ID:**
+1. Message [@userinfobot](https://t.me/userinfobot) on Telegram
+2. It will reply with your **chat ID** (a number like `123456789`)
+
+**Start a conversation with your bot:**
+1. Search for your bot by the username you gave it during creation
+2. Press "Start" - this is required before the bot can message you
+
+### Step 3: Configure
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your keys:
+
+```bash
+SPARK_ANTHROPIC_API_KEY=sk-ant-your-key-here
+SPARK_TELEGRAM_BOT_TOKEN=123456:ABC-your-token-here
+SPARK_TELEGRAM_CHAT_ID=your-chat-id-here
+```
+
+Verify your configuration:
+
+```bash
+spark setup
+```
+
+### Step 4: Register a project
+
+```bash
 cd ~/projects/my-app
 spark init --desc "SaaS dashboard" --goal "Finish the billing integration"
+```
 
-# Import your browser bookmarks
+Or register without `cd`:
+
+```bash
+spark init ~/projects/my-app --desc "SaaS dashboard" --goal "Ship billing"
+```
+
+Spark will scan the git history, compute your work rhythm, and start tracking.
+
+### Step 5: (Optional) Feed it knowledge
+
+Drop articles, notes, or bookmark exports into your knowledge folder (`~/knowledge` by default), or import directly:
+
+```bash
+# Chrome bookmarks (usually at ~/.config/google-chrome/Default/Bookmarks)
 spark import-bookmarks ~/path/to/Bookmarks
 
-# Check status
-spark status
+# Firefox bookmarks (export from Library > Bookmarks > Show All Bookmarks > Import/Backup)
+spark import-bookmarks ~/path/to/bookmarks.json
 
-# Start the agent
+# YouTube liked videos (from Google Takeout)
+spark import-youtube ~/path/to/liked-videos.csv
+
+# Twitter/X bookmarks (from data export)
+spark import-twitter ~/path/to/bookmarks.js
+
+# Check what's in the knowledge base
+spark knowledge
+spark search-knowledge "authentication best practices"
+```
+
+### Step 6: Start Spark
+
+```bash
 spark run
+```
+
+Spark runs in the foreground. It will:
+- Monitor your projects for git activity and file changes
+- Learn your work rhythm (commit frequency, active hours)
+- Reach out via Telegram when projects stall with specific ideas
+- Send daily morning digests and weekly retrospectives
+- Enrich your bookmarks by fetching and summarizing URL content
+
+To check project status without running the daemon:
+
+```bash
+spark status
 ```
 
 ## Configuration
 
-Set these in your `.env` file:
+All settings are via environment variables (with `SPARK_` prefix) or your `.env` file.
 
-| Variable | Required | Description |
+### Required
+
+| Variable | Description |
+|---|---|
+| `SPARK_ANTHROPIC_API_KEY` | Claude API key |
+| `SPARK_TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather |
+| `SPARK_TELEGRAM_CHAT_ID` | Your Telegram chat ID |
+
+### Optional
+
+| Variable | Default | Description |
 |---|---|---|
-| `SPARK_ANTHROPIC_API_KEY` | Yes | Claude API key |
-| `SPARK_TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token from @BotFather |
-| `SPARK_TELEGRAM_CHAT_ID` | Yes | Your Telegram chat ID |
-| `SPARK_PROJECTS_DIR` | No | Projects folder (default: `~/projects`) |
-| `SPARK_KNOWLEDGE_DIR` | No | Knowledge dump folder (default: `~/knowledge`) |
-| `SPARK_TIMEZONE` | No | Your timezone (default: `UTC`) |
-| `SPARK_AGENCY_LEVEL` | No | `suggest`, `light`, or `full` (default: `suggest`) |
-| `SPARK_MAX_DAILY_NUDGES` | No | Max messages per day (default: `3`) |
-| `SPARK_DAILY_DIGEST_ENABLED` | No | Enable daily project digest (default: `true`) |
-| `SPARK_WEEKLY_DIGEST_ENABLED` | No | Enable weekly retrospective (default: `true`) |
-| `SPARK_ENRICH_KNOWLEDGE` | No | Auto-fetch URL content for bookmarks (default: `true`) |
-| `SPARK_LEARN_FROM_CONVERSATIONS` | No | Extract preferences from chats (default: `true`) |
+| `SPARK_PROJECTS_DIR` | `~/projects` | Folder containing your projects |
+| `SPARK_KNOWLEDGE_DIR` | `~/knowledge` | Folder for articles, notes, bookmarks |
+| `SPARK_DATA_DIR` | `~/.spark` | Where Spark stores its database and embeddings |
+| `SPARK_TIMEZONE` | `UTC` | Your timezone (e.g., `America/New_York`) |
+| `SPARK_QUIET_HOURS_START` | `22:00` | No nudges after this time |
+| `SPARK_QUIET_HOURS_END` | `08:00` | Resume nudges after this time |
+| `SPARK_AGENCY_LEVEL` | `suggest` | `suggest`, `light`, or `full` (see below) |
+| `SPARK_MAX_DAILY_NUDGES` | `3` | Max nudge messages per day |
+| `SPARK_MODEL` | `claude-sonnet-4-20250514` | Claude model to use |
+| `SPARK_DAILY_DIGEST_ENABLED` | `true` | Send a morning project digest |
+| `SPARK_WEEKLY_DIGEST_ENABLED` | `true` | Send a Sunday weekly retrospective |
+| `SPARK_ENRICH_KNOWLEDGE` | `true` | Auto-fetch and summarize URL content |
+| `SPARK_LEARN_FROM_CONVERSATIONS` | `true` | Extract preferences from your chats |
 
 ## Agency Levels
 
