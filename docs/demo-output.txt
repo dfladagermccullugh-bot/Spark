@@ -1,0 +1,91 @@
+
+=== spark doctor --live (backend=claude-cli) ===
+Model: claude-sonnet-5-5  effort=medium  thinking=between_tools  
+backend=claude-cli
+OK    `claude` CLI on PATH
+OK    Model id is not retired
+NOTE  Dry run enabled: Telegram is not used
+OK    Live call: model=claude-sonnet-5-5 stop_reason=end_turn latency=1618ms
+
+All checks passed.
+
+=== spark init (register projects) ===
+
+Tracking: Kaban-Plus-Ultra
+  Path: <demo>/projects/Kaban-Plus-Ultra
+  GitHub: dfladagermccullugh-bot/Kaban-Plus-Ultra
+  Description: Kanban board with true 2D swimlanes (rows x columns), markdown 
+cards; web, iOS and Android from one TypeScript codebase
+  Goal: Get a usable end-to-end board (create, move, persist cards) in front of 
+real users
+  Collected 50 existing activity events
+  Rhythm: ~2h between commits, 1.2 active days/week
+
+Spark is now watching this project.
+
+Tracking: ThoughStream
+  Path: <demo>/projects/ThoughStream
+  GitHub: dfladagermccullugh-bot/ThoughStream
+  Description: Self-hosted shared idea board: one Go binary, SQLite, vanilla JS 
+PWA, mobile-first
+  Goal: Ship the first deployable build and capture my own ideas with it daily
+  Collected 3 existing activity events
+  Rhythm: ~4h between commits, 0.2 active days/week
+
+Spark is now watching this project.
+
+Tracking: MCP-Bridge-Dashboard
+  Path: <demo>/projects/MCP-Bridge-Dashboard
+  GitHub: dfladagermccullugh-bot/MCP-Bridge-Dashboard
+  Description: Local dashboard that automates install, Docker build and config 
+of MCP servers for Claude Desktop/Code on Windows
+  Goal: Get one-click MCP server install working end to end
+  Collected 8 existing activity events
+  Rhythm: ~1h between commits, 0.5 active days/week
+
+Spark is now watching this project.
+
+=== spark status ===
+                             Spark Projects                             
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┓
+┃ Project              ┃ Status ┃ Last Activity ┃ Rhythm ┃ Nudges Sent ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━┩
+│ Kaban-Plus-Ultra     │ active │ 183d ago      │ ~2h    │ 0           │
+│ ThoughStream         │ active │ 200d ago      │ ~4h    │ 0           │
+│ MCP-Bridge-Dashboard │ active │ 220d ago      │ ~1h    │ 0           │
+└──────────────────────┴────────┴───────────────┴────────┴─────────────┘
+
+=== spark check --dry-run --force (one pass of the daemon loop) ===
+Collected 0 new git activity events
+Updated rhythm baselines for 3 active project(s)
+                                Detected stalls                                
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ Project              ┃ Hours since activity ┃ Baseline gap (h) ┃ Confidence ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ MCP-Bridge-Dashboard │ 5278                 │ 1.4              │ 1.00       │
+│ ThoughStream         │ 4807                 │ 3.8              │ 1.00       │
+│ Kaban-Plus-Ultra     │ 4402                 │ 1.9              │ 1.00       │
+└──────────────────────┴──────────────────────┴──────────────────┴────────────┘
+
+Nudge for MCP-Bridge-Dashboard:
+
+Been thinking about that `--log-driver none` fix. It solves the stdio timeout, 
+but it also means you're blind when a server crashes on startup. What if 
+buildEngine ran a quick smoke test right after the build: spin up the container,
+send a JSON-RPC `initialize`, and only write the config entry if it answers?
+
+That gets you to real one-click, because "installed" would mean "verified 
+working" instead of "image built." And if the handshake fails, you can show the 
+stderr in BuildModal.tsx instead of leaving the user to find out in Claude 
+Desktop.
+
+Delivery: dry-run (logged to dry_run_messages.log), not sent
+[spark dry-run 2026-11-15T19:57:22] Been thinking about that `--log-driver none` fix. It solves the stdio timeout, but it also means you're blind when a server crashes on startup. What if buildEngine ran a quick smoke test right after the build: spin up the container, send a JSON-RPC `initialize`, and only write the config entry if it answers?
+
+That gets you to real one-click, because "installed" would mean "verified working" instead of "image built." And if the handshake fails, you can show the stderr in BuildModal.tsx instead of leaving the user to find out in Claude Desktop.
+
+=== dry-run log (what would have gone to Telegram) ===
+[2026-11-15T19:57:22] Been thinking about that `--log-driver none` fix. It solves the stdio timeout, but it also means you're blind when a server crashes on startup. What if buildEngine ran a quick smoke test right after the build: spin up the container, send a JSON-RPC `initialize`, and only write the config entry if it answers?
+
+That gets you to real one-click, because "installed" would mean "verified working" instead of "image built." And if the handshake fails, you can show the stderr in BuildModal.tsx instead of leaving the user to find out in Claude Desktop.
+
