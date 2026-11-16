@@ -192,7 +192,7 @@ def build_project_context(project_id: str) -> dict:
         ]
 
     # Filesystem context
-    repo_path = Path(project.local_path)
+    repo_path = Path(context["local_path"])
     if repo_path.exists():
         context["file_tree"] = _get_file_tree(repo_path)
 

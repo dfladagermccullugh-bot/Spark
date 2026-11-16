@@ -24,9 +24,20 @@ def compute_rhythm_profile(project_id: str, lookback_days: int = 30) -> dict:
         total_commits: total commits in the lookback period
         last_commit_at: timestamp of most recent commit
     """
-    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-
     with get_session() as session:
+        # Anchor the window to the project's most recent commit, not "now": a project
+        # that has been stalled longer than lookback_days must still yield the rhythm
+        # it had while active (that is the baseline a stall is measured against).
+        latest = (
+            session.query(ActivityEvent.occurred_at)
+            .filter(
+                ActivityEvent.project_id == project_id,
+                ActivityEvent.event_type == EventType.COMMIT.value,
+            )
+            .order_by(ActivityEvent.occurred_at.desc())
+            .first()
+        )
+        cutoff = (latest[0] if latest else datetime.utcnow()) - timedelta(days=lookback_days)
         events = (
             session.query(ActivityEvent)
             .filter(

@@ -148,18 +148,21 @@ def detect_stalls(
     min_hours_between_nudges: float = 4.0,
     max_daily_nudges: int = 3,
     stall_multiplier: float = 2.0,
+    force: bool = False,
 ) -> list[StallResult]:
     """Check all active projects for stalls, respecting quiet hours and rate limits.
 
     Returns a list of StallResults for projects that need attention.
+    With ``force=True`` quiet hours, the daily cap and the min-hours-between-nudges
+    check are skipped (for one-shot manual runs / demos); stall math is unchanged.
     """
     # Respect quiet hours
-    if _is_quiet_hours(timezone, quiet_start, quiet_end):
+    if not force and _is_quiet_hours(timezone, quiet_start, quiet_end):
         logger.debug("In quiet hours, skipping stall check")
         return []
 
     # Respect daily limit
-    if _daily_nudge_count() >= max_daily_nudges:
+    if not force and _daily_nudge_count() >= max_daily_nudges:
         logger.debug(f"Daily nudge limit ({max_daily_nudges}) reached")
         return []
 
@@ -175,7 +178,7 @@ def detect_stalls(
 
     for pid, pname in project_ids:
         # Don't re-nudge too soon
-        if _recently_nudged(pid, min_hours_between_nudges):
+        if not force and _recently_nudged(pid, min_hours_between_nudges):
             logger.debug(f"Recently nudged {pname}, skipping")
             continue
 
