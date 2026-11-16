@@ -4,10 +4,19 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Single source of truth for the model Spark talks to.
+DEFAULT_MODEL = "claude-sonnet-5-5"
+
+# Models Anthropic has retired; requests to these always fail.
+# `spark doctor` and the startup check refuse to run with them.
+RETIRED_MODELS: frozenset[str] = frozenset({
+    "claude-sonnet-4-20250514",  # retired June 15, 2026
+})
 
 
 class AgencyLevel(str, Enum):
@@ -53,7 +62,26 @@ class SparkSettings(BaseSettings):
     learn_from_conversations: bool = True
 
     # LLM
-    model: str = "claude-sonnet-4-20250514"
+    model: str = DEFAULT_MODEL
+    # Reasoning effort (output_config.effort): low | medium | high | xhigh | max
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    # "between_tools" turns off up-front thinking; "adaptive" lets the model decide.
+    thinking: Literal["between_tools", "adaptive"] = "between_tools"
+    # "anthropic" (API key) or "claude-cli" (shell out to the Claude Code CLI)
+    llm_backend: Literal["anthropic", "claude-cli"] = "anthropic"
+
+    # Delivery
+    # Print/log messages (stdout + data_dir/dry_run_messages.log) instead of sending to Telegram
+    dry_run: bool = False
+
+    @property
+    def llm_configured(self) -> bool:
+        """True if the selected LLM backend has what it needs to run."""
+        return self.llm_backend == "claude-cli" or bool(self.anthropic_api_key)
+
+    @property
+    def dry_run_path(self) -> Path:
+        return self.data_dir / "dry_run_messages.log"
 
     @property
     def db_path(self) -> Path:
