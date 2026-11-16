@@ -11,7 +11,8 @@ import json
 import logging
 from datetime import datetime
 
-import anthropic
+from spark.config import DEFAULT_MODEL
+from spark.core.llm import LLMError, generate_text
 
 from spark.db.connection import get_session
 from spark.db.models import AgentMemory, Message, MemoryType, MessageDirection
@@ -53,7 +54,7 @@ Return ONLY the JSON array, no other text.\
 def extract_memories(
     messages: list[dict],
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
 ) -> list[dict]:
     """Extract memories from a list of messages using Claude.
 
@@ -61,6 +62,8 @@ def extract_memories(
         messages: List of dicts with 'direction', 'content', 'sent_at' keys.
         api_key: Anthropic API key.
         model: Model to use.
+
+    Raises LLMError if the Claude call fails.
 
     Returns:
         List of extracted memory dicts: {type, content, importance}.
@@ -74,16 +77,17 @@ def extract_memories(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        text = generate_text(
+            MEMORY_EXTRACTION_PROMPT.format(conversation=conversation),
+            api_key=api_key,
             model=model,
-            max_tokens=500,
-            messages=[{
-                "role": "user",
-                "content": MEMORY_EXTRACTION_PROMPT.format(conversation=conversation),
-            }],
-        )
-        text = response.content[0].text.strip()
+            max_tokens=800,
+        ).text
+    except LLMError:
+        logger.exception("Failed to extract memories (model=%s)", model)
+        raise
+
+    try:
 
         # Parse JSON from response (handle markdown code blocks)
         if "```" in text:
@@ -101,8 +105,8 @@ def extract_memories(
             if isinstance(m, dict) and "type" in m and "content" in m
         ]
 
-    except Exception as e:
-        logger.error(f"Failed to extract memories: {e}")
+    except ValueError:
+        logger.exception("Memory extraction returned unparseable JSON: %r", text[:200])
         return []
 
 
@@ -198,7 +202,7 @@ def get_memory_context(max_items: int = 10) -> str:
 
 def process_conversation_for_memories(
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
     lookback: int = 10,
 ) -> int:
     """Process recent conversations and extract memories.

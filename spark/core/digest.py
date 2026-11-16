@@ -10,10 +10,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-import anthropic
-
+from spark.config import DEFAULT_MODEL
 from spark.core.context_engine import build_cross_project_context
 from spark.core.feedback import get_effectiveness_stats
+from spark.core.llm import LLMError, generate_text
 from spark.core.memory import get_memory_context
 from spark.core.prompts.system import SYSTEM_PROMPT
 from spark.db.connection import get_session
@@ -142,11 +142,12 @@ def _already_sent_today(digest_type: str) -> bool:
 
 def generate_daily_digest(
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
 ) -> str | None:
     """Generate a daily digest message.
 
-    Returns the digest text, or None if generation fails or
+    Returns the digest text, or None if there is nothing to send or
+    (raises LLMError if the Claude call fails)
     a digest was already sent today.
     """
     if _already_sent_today("daily"):
@@ -175,14 +176,15 @@ def generate_daily_digest(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=400,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        digest_text = response.content[0].text.strip()
+        digest_text = generate_text(
+            prompt, api_key=api_key, model=model, system=SYSTEM_PROMPT,
+            max_tokens=700,
+        ).text
+    except LLMError:
+        logger.exception("Failed to generate %s digest (model=%s)", "daily", model)
+        raise
+
+    try:
 
         # Record the digest and message
         now = datetime.utcnow()
@@ -209,18 +211,19 @@ def generate_daily_digest(
         logger.info("Generated daily digest")
         return digest_text
 
-    except Exception as e:
-        logger.error(f"Failed to generate daily digest: {e}")
+    except Exception:
+        logger.exception("Generated daily digest but failed to record it")
         return None
 
 
 def generate_weekly_digest(
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
 ) -> str | None:
     """Generate a weekly retrospective digest.
 
-    Returns the digest text, or None if generation fails or
+    Returns the digest text, or None if there is nothing to send or
+    (raises LLMError if the Claude call fails)
     a weekly digest was already sent today.
     """
     if _already_sent_today("weekly"):
@@ -253,14 +256,15 @@ def generate_weekly_digest(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        digest_text = response.content[0].text.strip()
+        digest_text = generate_text(
+            prompt, api_key=api_key, model=model, system=SYSTEM_PROMPT,
+            max_tokens=800,
+        ).text
+    except LLMError:
+        logger.exception("Failed to generate %s digest (model=%s)", "weekly", model)
+        raise
+
+    try:
 
         now = datetime.utcnow()
         with get_session() as session:
@@ -286,6 +290,6 @@ def generate_weekly_digest(
         logger.info("Generated weekly digest")
         return digest_text
 
-    except Exception as e:
-        logger.error(f"Failed to generate weekly digest: {e}")
+    except Exception:
+        logger.exception("Generated weekly digest but failed to record it")
         return None

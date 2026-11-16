@@ -13,8 +13,8 @@ from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
-import anthropic
-
+from spark.config import DEFAULT_MODEL
+from spark.core.llm import LLMError, generate_text
 from spark.db.connection import get_session
 from spark.db.models import KnowledgeItem
 
@@ -101,18 +101,19 @@ def fetch_and_summarize(
     url: str,
     title: str,
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
 ) -> str | None:
     """Fetch a URL's content and generate a summary using Claude.
 
-    Returns the summary text, or None if fetching/summarization fails.
+    Returns the summary text, or None if the page could not be fetched.
+    Raises LLMError if the Claude call fails.
     """
     if _should_skip_url(url):
         return None
 
     try:
-        import urllib.request
         import urllib.error
+        import urllib.request
 
         req = urllib.request.Request(
             url,
@@ -146,29 +147,24 @@ def fetch_and_summarize(
 
     # Summarize with Claude
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        return generate_text(
+            SUMMARIZE_PROMPT.format(
+                title=title,
+                url=url,
+                content=text[:MAX_CONTENT_LENGTH],
+            ),
+            api_key=api_key,
             model=model,
-            max_tokens=200,
-            messages=[{
-                "role": "user",
-                "content": SUMMARIZE_PROMPT.format(
-                    title=title,
-                    url=url,
-                    content=text[:MAX_CONTENT_LENGTH],
-                ),
-            }],
-        )
-        return response.content[0].text.strip()
-
-    except Exception as e:
-        logger.error(f"Failed to summarize {url}: {e}")
-        return None
+            max_tokens=400,
+        ).text
+    except LLMError:
+        logger.exception("Failed to summarize %s (model=%s)", url, model)
+        raise
 
 
 def enrich_knowledge_items(
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
     batch_size: int = 5,
 ) -> int:
     """Enrich knowledge items that have URLs but no content summary.
@@ -201,6 +197,8 @@ def enrich_knowledge_items(
 
     enriched = 0
 
+    # An LLMError propagates (aborting the batch) *before* the item is marked
+    # enriched, so items are retried once the model works again.
     for item_id, url, title, existing_summary in item_data:
         # Skip if already has a good summary
         if existing_summary and len(existing_summary) > 100:

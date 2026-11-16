@@ -6,8 +6,8 @@ import json
 import logging
 from datetime import datetime
 
-import anthropic
-
+from spark.config import DEFAULT_MODEL
+from spark.core.llm import LLMError, generate_text
 from spark.core.context_engine import build_cross_project_context, build_project_context
 from spark.core.feedback import get_feedback_context, record_nudge_sent
 from spark.core.memory import get_memory_context
@@ -95,12 +95,13 @@ def _format_previous_messages(context: dict) -> str:
 def generate_nudge(
     stall: StallResult,
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
     agency_level: str = "suggest",
 ) -> str | None:
     """Generate a nudge message for a stalled project.
 
-    Returns the message text, or None if generation fails.
+    Returns the message text, or None if there is nothing to say.
+    Raises LLMError if the Claude call fails.
     """
     context = build_project_context(stall.project_id)
     if not context:
@@ -150,15 +151,14 @@ def generate_nudge(
         prompt += "\n\n" + CONTRIBUTION_NUDGE_ADDENDUM.format(agency_level=agency_level)
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        nudge_text = response.content[0].text.strip()
+        nudge_text = generate_text(
+            prompt, api_key=api_key, model=model, system=SYSTEM_PROMPT, max_tokens=800
+        ).text
+    except LLMError:
+        logger.exception("Failed to generate nudge (model=%s)", model)
+        raise
 
+    try:
         # Record the outbound message
         with get_session() as session:
             msg = Message(
@@ -179,8 +179,8 @@ def generate_nudge(
         logger.info(f"Generated nudge for {stall.project_name}: {nudge_text[:80]}...")
         return nudge_text
 
-    except Exception as e:
-        logger.error(f"Failed to generate nudge: {e}")
+    except Exception:
+        logger.exception("Generated a nudge but failed to record it")
         return None
 
 
@@ -188,7 +188,7 @@ def generate_reply(
     project_id: str,
     user_message: str,
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
 ) -> str | None:
     """Generate a reply to a user's message about a project."""
     context = build_project_context(project_id)
@@ -209,15 +209,14 @@ def generate_reply(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        reply_text = response.content[0].text.strip()
+        reply_text = generate_text(
+            prompt, api_key=api_key, model=model, system=SYSTEM_PROMPT, max_tokens=800
+        ).text
+    except LLMError:
+        logger.exception("Failed to generate reply (model=%s)", model)
+        raise
 
+    try:
         # Record both messages
         with get_session() as session:
             inbound = Message(
@@ -239,6 +238,6 @@ def generate_reply(
 
         return reply_text
 
-    except Exception as e:
-        logger.error(f"Failed to generate reply: {e}")
-        return None
+    except Exception:
+        logger.exception("Generated a reply but failed to record it")
+        return reply_text

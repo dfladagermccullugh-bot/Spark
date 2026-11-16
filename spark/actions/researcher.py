@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-import anthropic
-
+from spark.config import DEFAULT_MODEL
 from spark.core.context_engine import build_project_context
+from spark.core.llm import generate_text
 from spark.db.connection import get_session
 from spark.db.models import AgentTask, TaskStatus, TaskType
 from spark.knowledge.indexer import search_knowledge, search_project_files
@@ -51,7 +51,7 @@ def research_topic(
     project_id: str,
     question: str,
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
 ) -> ResearchResult:
     """Research a question in the context of a project.
 
@@ -136,15 +136,13 @@ Keep it concise - this will be sent as a message.\
 """
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        summary = generate_text(
+            research_context,
+            api_key=api_key,
             model=model,
-            max_tokens=1500,
             system=RESEARCH_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": research_context}],
-        )
-
-        summary = response.content[0].text.strip()
+            max_tokens=2200,
+        ).text
 
         # Build findings list
         findings = []
@@ -180,7 +178,7 @@ Keep it concise - this will be sent as a message.\
         )
 
     except Exception as e:
-        logger.error(f"Research failed: {e}")
+        logger.exception("Research failed (model=%s)", model)
         with get_session() as session:
             task = session.query(AgentTask).filter(AgentTask.id == task_id).first()
             if task:
@@ -193,7 +191,7 @@ Keep it concise - this will be sent as a message.\
 def analyze_blocker(
     project_id: str,
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
 ) -> ResearchResult:
     """Proactively analyze what might be blocking progress on a project.
 

@@ -12,10 +12,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from spark.collectors.file_watcher import SparkFileWatcher
 from spark.collectors.git_collector import collect_git_activity
-from spark.config import SparkSettings
+from spark.config import RETIRED_MODELS, SparkSettings
 from spark.core.context_engine import build_cross_project_context
+from spark.core import llm
+from spark.core.alerts import AlertLimiter, format_alert
 from spark.core.digest import generate_daily_digest, generate_weekly_digest
 from spark.core.feedback import check_nudge_effectiveness, get_effectiveness_stats
+from spark.core.llm import LLMError
 from spark.core.memory import process_conversation_for_memories, recall_memories
 from spark.core.nudge_generator import generate_nudge, generate_reply
 from spark.core.rhythm import update_project_baselines
@@ -58,10 +61,14 @@ class SparkDaemon:
         self._file_watcher: SparkFileWatcher | None = None
         self._delivery = None
         self._running = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._alerts = AlertLimiter(settings.data_dir / "alert_state.json")
+        llm.configure(settings)
 
     async def start(self) -> None:
         """Start the Spark daemon."""
         logger.info("Starting Spark daemon...")
+        self._loop = asyncio.get_running_loop()
 
         # Initialize database and vector store
         self.settings.ensure_dirs()
@@ -72,7 +79,16 @@ class SparkDaemon:
         _load_pending_from_db()
 
         # Initialize delivery adapter
-        if self.settings.telegram_bot_token and self.settings.telegram_chat_id:
+        if self.settings.dry_run:
+            from spark.delivery.dry_run import DryRunAdapter
+
+            self._delivery = DryRunAdapter(self.settings.dry_run_path)
+            await self._delivery.start_listening(on_message=self._handle_incoming)
+            logger.warning(
+                "DRY RUN: messages are printed and written to %s, not sent to Telegram",
+                self.settings.dry_run_path,
+            )
+        elif self.settings.telegram_bot_token and self.settings.telegram_chat_id:
             from spark.delivery.telegram import TelegramAdapter
 
             self._delivery = TelegramAdapter(
@@ -83,6 +99,9 @@ class SparkDaemon:
             logger.info("Telegram delivery adapter started")
         else:
             logger.warning("No delivery adapter configured (set SPARK_TELEGRAM_BOT_TOKEN)")
+
+        # Fail loudly at startup if the model/auth is broken
+        await asyncio.to_thread(self._startup_check)
 
         # Start file watcher
         self._file_watcher = SparkFileWatcher(
@@ -177,6 +196,74 @@ class SparkDaemon:
         except (KeyboardInterrupt, SystemExit):
             await self.stop()
 
+    # ------------------------------------------------------------------
+    # LLM failure handling
+    # ------------------------------------------------------------------
+
+    def _startup_check(self) -> bool:
+        """Verify the model works; log at ERROR and alert the owner if not."""
+        model = self.settings.model
+        try:
+            if model in RETIRED_MODELS:
+                raise LLMError(
+                    f"Model {model!r} has been retired by Anthropic; set SPARK_MODEL "
+                    "to a current model",
+                    model=model,
+                    error_type="RetiredModel",
+                )
+            if not self.settings.llm_configured:
+                raise LLMError(
+                    "No LLM configured (set SPARK_ANTHROPIC_API_KEY or "
+                    "SPARK_LLM_BACKEND=claude-cli)",
+                    model=model,
+                    error_type="MissingAPIKey",
+                )
+            result = llm.ping(self.settings.anthropic_api_key, model)
+            logger.info(
+                "LLM startup check OK (model=%s, stop_reason=%s, %.1fs)",
+                model, result.stop_reason, result.latency_s,
+            )
+            return True
+        except LLMError as err:
+            logger.error("=" * 70)
+            logger.error("STARTUP CHECK FAILED: Claude is not usable: %s", err, exc_info=err)
+            logger.error("Nudges, digests and replies will NOT work until this is fixed.")
+            logger.error("=" * 70)
+            self._alert_llm_failure(err, log=False)
+            return False
+
+    def _alert_llm_failure(self, err: LLMError, log: bool = True) -> None:
+        """Log an LLM failure at ERROR and (rate-limited) tell the owner via delivery."""
+        if log:
+            logger.error("Claude call failed: %s", err, exc_info=err)
+        if self._delivery is None:
+            return
+        if not self._alerts.should_send(err.error_type):
+            logger.info("LLM failure alert suppressed (already alerted for %s)", err.error_type)
+            return
+        self._send(format_alert(err))
+
+    def _send(self, text: str) -> None:
+        """Send via the delivery adapter from either the event loop or a worker thread."""
+        if not self._delivery:
+            return
+        try:
+            asyncio.get_running_loop()
+            asyncio.ensure_future(self._delivery.send(text))
+        except RuntimeError:
+            # Scheduler jobs run in worker threads: hand off to the daemon's loop.
+            if self._loop is None:
+                logger.error("Cannot send message: daemon event loop not running")
+                return
+            future = asyncio.run_coroutine_threadsafe(self._delivery.send(text), self._loop)
+            future.add_done_callback(self._log_send_result)
+
+    @staticmethod
+    def _log_send_result(future) -> None:
+        exc = future.exception()
+        if exc is not None:
+            logger.error("Message delivery failed", exc_info=exc)
+
     async def stop(self) -> None:
         """Stop the daemon gracefully."""
         logger.info("Stopping Spark daemon...")
@@ -216,15 +303,19 @@ class SparkDaemon:
 
         # Generate and send a nudge for the highest-confidence stall
         stall = stalls[0]
-        nudge = generate_nudge(
-            stall=stall,
-            api_key=self.settings.anthropic_api_key,
-            model=self.settings.model,
-            agency_level=self.settings.agency_level.value,
-        )
+        try:
+            nudge = generate_nudge(
+                stall=stall,
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+                agency_level=self.settings.agency_level.value,
+            )
+        except LLMError as err:
+            self._alert_llm_failure(err)
+            return
 
-        if nudge and self._delivery:
-            asyncio.get_event_loop().create_task(self._delivery.send(nudge))
+        if nudge:
+            self._send(nudge)
 
     def _update_baselines(self) -> None:
         """Update rhythm baselines for all active projects."""
@@ -297,52 +388,68 @@ class SparkDaemon:
 
     def _extract_memories(self) -> None:
         """Extract memories from recent conversations."""
-        if not self.settings.anthropic_api_key:
+        if not self.settings.llm_configured:
             return
         logger.debug("Extracting memories from conversations...")
-        stored = process_conversation_for_memories(
-            api_key=self.settings.anthropic_api_key,
-            model=self.settings.model,
-        )
+        try:
+            stored = process_conversation_for_memories(
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+        except LLMError as err:
+            self._alert_llm_failure(err)
+            return
         if stored:
             logger.info(f"Extracted {stored} new memories")
 
     def _enrich_knowledge(self) -> None:
         """Fetch and summarize URL content for knowledge items."""
-        if not self.settings.anthropic_api_key:
+        if not self.settings.llm_configured:
             return
         logger.debug("Enriching knowledge items...")
-        enriched = enrich_knowledge_items(
-            api_key=self.settings.anthropic_api_key,
-            model=self.settings.model,
-            batch_size=3,
-        )
+        try:
+            enriched = enrich_knowledge_items(
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+                batch_size=3,
+            )
+        except LLMError as err:
+            self._alert_llm_failure(err)
+            return
         if enriched:
             logger.info(f"Enriched {enriched} knowledge items")
 
     def _send_daily_digest(self) -> None:
         """Send the daily project digest."""
-        if not self.settings.anthropic_api_key or not self._delivery:
+        if not self.settings.llm_configured or not self._delivery:
             return
         logger.info("Generating daily digest...")
-        digest = generate_daily_digest(
-            api_key=self.settings.anthropic_api_key,
-            model=self.settings.model,
-        )
+        try:
+            digest = generate_daily_digest(
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+        except LLMError as err:
+            self._alert_llm_failure(err)
+            return
         if digest:
-            asyncio.get_event_loop().create_task(self._delivery.send(digest))
+            self._send(digest)
 
     def _send_weekly_digest(self) -> None:
         """Send the weekly retrospective digest."""
-        if not self.settings.anthropic_api_key or not self._delivery:
+        if not self.settings.llm_configured or not self._delivery:
             return
         logger.info("Generating weekly digest...")
-        digest = generate_weekly_digest(
-            api_key=self.settings.anthropic_api_key,
-            model=self.settings.model,
-        )
+        try:
+            digest = generate_weekly_digest(
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+        except LLMError as err:
+            self._alert_llm_failure(err)
+            return
         if digest:
-            asyncio.get_event_loop().create_task(self._delivery.send(digest))
+            self._send(digest)
 
     def _clear_expired_proposals(self) -> None:
         """Clear proposals that have been pending too long."""
@@ -377,13 +484,17 @@ class SparkDaemon:
         if not project_id:
             return "Hey! I don't have context on which project you're referring to. Try /projects to see what I'm tracking."
 
-        reply = generate_reply(
-            project_id=project_id,
-            user_message=text,
-            api_key=self.settings.anthropic_api_key,
-            model=self.settings.model,
-        )
-        return reply
+        try:
+            return generate_reply(
+                project_id=project_id,
+                user_message=text,
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+        except LLMError as err:
+            logger.error("Claude call failed while replying: %s", err, exc_info=err)
+            # The reply itself is the notice to the owner; no separate alert needed.
+            return format_alert(err)
 
     def _handle_approval(self) -> str:
         """Handle user approving a pending action."""
@@ -670,13 +781,17 @@ class SparkDaemon:
 
     def _cmd_digest(self) -> str:
         """Generate and return a digest on demand."""
-        if not self.settings.anthropic_api_key:
+        if not self.settings.llm_configured:
             return "API key not configured."
 
-        digest = generate_daily_digest(
-            api_key=self.settings.anthropic_api_key,
-            model=self.settings.model,
-        )
+        try:
+            digest = generate_daily_digest(
+                api_key=self.settings.anthropic_api_key,
+                model=self.settings.model,
+            )
+        except LLMError as err:
+            logger.error("Claude call failed while generating digest: %s", err, exc_info=err)
+            return format_alert(err)
         if digest:
             return digest
         return "Couldn't generate a digest right now. Maybe one was already sent today."
