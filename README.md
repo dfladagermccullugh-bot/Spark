@@ -175,11 +175,42 @@ All settings are via environment variables (with `SPARK_` prefix) or your `.env`
 | `SPARK_QUIET_HOURS_END` | `08:00` | Resume nudges after this time |
 | `SPARK_AGENCY_LEVEL` | `suggest` | `suggest`, `light`, or `full` (see below) |
 | `SPARK_MAX_DAILY_NUDGES` | `3` | Max nudge messages per day |
-| `SPARK_MODEL` | `claude-sonnet-4-20250514` | Claude model to use |
+| `SPARK_MODEL` | `claude-sonnet-5-5` | Claude model to use |
+| `SPARK_EFFORT` | `medium` | Reasoning effort: `low`, `medium`, `high`, `xhigh`, `max` |
+| `SPARK_THINKING` | `between_tools` | `between_tools` (no up-front thinking, cheapest) or `adaptive` |
+| `SPARK_LLM_BACKEND` | `anthropic` | `anthropic` (API key) or `claude-cli` (use the Claude Code CLI / your subscription; no API key; no code generation) |
+| `SPARK_DRY_RUN` | `false` | Print messages and write them to `<data dir>/dry_run_messages.log` instead of sending to Telegram (also `spark run --dry-run`) |
 | `SPARK_DAILY_DIGEST_ENABLED` | `true` | Send a morning project digest |
 | `SPARK_WEEKLY_DIGEST_ENABLED` | `true` | Send a Sunday weekly retrospective |
 | `SPARK_ENRICH_KNOWLEDGE` | `true` | Auto-fetch and summarize URL content |
 | `SPARK_LEARN_FROM_CONVERSATIONS` | `true` | Extract preferences from your chats |
+
+## Troubleshooting
+
+### Spark stopped sending nudges and there are no errors
+
+Run `spark doctor`. It checks that your API key, Telegram settings and model id are
+valid (no network calls), and flags retired models such as `claude-sonnet-4-20250514`
+(retired June 15, 2026). Add `--live` to make one tiny real API call and print the
+model, stop reason and latency. It exits non-zero on any failure.
+
+```bash
+spark doctor          # config only, offline
+spark doctor --live   # also confirms the model really answers
+```
+
+Older versions swallowed Claude API errors and logged nothing useful, so a retired
+model looked like a quiet daemon. Now:
+
+- Every Claude failure (API error, refusal, empty or truncated output) is logged at
+  `ERROR` with the model id and stop reason.
+- The daemon checks the model at startup and logs a prominent error if it fails.
+- When nudge, digest or reply generation fails, Spark sends **one** short alert to your
+  Telegram chat (at most one per error type every 6 hours), e.g.
+  `Spark: Claude call failed (model X, NotFoundError: ...). Nudges are paused until fixed. Run spark doctor.`
+
+If you pinned `SPARK_MODEL` in your `.env`, update or remove it. To preview messages
+without sending them, use `spark run --dry-run`.
 
 ## Agency Levels
 
@@ -315,3 +346,7 @@ Or just reply to any message to continue the conversation.
 ## License
 
 AGPL-3.0 - see [LICENSE](LICENSE)
+
+## Demo
+
+See [DEMO.md](DEMO.md) for an end-to-end dry-run on real, stalled repos (`scripts/demo.sh`, `spark check`).
