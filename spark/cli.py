@@ -22,6 +22,21 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def _main() -> None:
+    """Apply LLM settings (effort/thinking/backend) for every command."""
+    from spark.core import llm
+
+    llm.configure(get_settings())
+
+
+def _fail_llm(err: Exception) -> None:
+    """Print a loud, actionable LLM failure and exit non-zero."""
+    console.print(f"[red]Claude call failed:[/red] {err}")
+    console.print("Run [bold]spark doctor --live[/bold] to diagnose.")
+    raise typer.Exit(1)
+
+
 def _init_db_from_settings():
     """Initialize DB using current settings."""
     settings = get_settings()
@@ -276,11 +291,17 @@ def resume(
 
 
 @app.command()
-def run():
+def run(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print/log messages instead of sending them to Telegram"
+    ),
+):
     """Start the Spark daemon (foreground)."""
     settings = get_settings()
+    if dry_run:
+        settings.dry_run = True
 
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         console.print("[red]SPARK_ANTHROPIC_API_KEY is required. Run `spark setup` for help.[/red]")
         raise typer.Exit(1)
 
@@ -297,6 +318,10 @@ def run():
     console.print(f"  Check interval: {settings.stall_check_interval_minutes}m")
     console.print(f"  Quiet hours: {settings.quiet_hours_start} - {settings.quiet_hours_end}")
     console.print(f"  Agency level: {settings.agency_level.value}")
+    console.print(f"  Model: {settings.model} (effort={settings.effort}, "
+                  f"thinking={settings.thinking}, backend={settings.llm_backend})")
+    if settings.dry_run:
+        console.print(f"  [yellow]DRY RUN[/yellow]: messages go to {settings.dry_run_path}")
     console.print()
 
     from spark.daemon import run_daemon
@@ -331,8 +356,8 @@ def do_task(
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.llm_configured:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required (or use claude-cli).[/red]")
         raise typer.Exit(1)
 
     from spark.db.connection import get_session
@@ -370,6 +395,8 @@ def do_task(
             api_key=settings.anthropic_api_key,
             model=settings.model,
         )
+    if result.summary.startswith("Claude call failed"):
+        _fail_llm(result.summary)
 
     if result.success:
         console.print(f"[green]Done![/green] Changed {len(result.files_changed)} file(s):")
@@ -401,8 +428,8 @@ def research(
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.llm_configured:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required (or use claude-cli).[/red]")
         raise typer.Exit(1)
 
     from spark.db.connection import get_session
@@ -446,6 +473,7 @@ def research(
             console.print(f"\n[dim]({len(result.findings)} sources referenced)[/dim]")
     else:
         console.print(f"[red]Research failed:[/red] {result.summary[:300]}")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -596,8 +624,8 @@ def digest():
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.llm_configured:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required (or use claude-cli).[/red]")
         raise typer.Exit(1)
 
     from spark.knowledge.indexer import init_chromadb
@@ -605,11 +633,16 @@ def digest():
 
     init_chromadb(settings.chromadb_path)
 
-    with console.status("Generating digest..."):
-        text = generate_daily_digest(
-            api_key=settings.anthropic_api_key,
-            model=settings.model,
-        )
+    from spark.core.llm import LLMError
+
+    try:
+        with console.status("Generating digest..."):
+            text = generate_daily_digest(
+                api_key=settings.anthropic_api_key,
+                model=settings.model,
+            )
+    except LLMError as err:
+        _fail_llm(err)
 
     if text:
         console.print(text)
@@ -695,23 +728,181 @@ def enrich_cmd(
     _init_db_from_settings()
     settings = get_settings()
 
-    if not settings.anthropic_api_key:
-        console.print("[red]SPARK_ANTHROPIC_API_KEY is required.[/red]")
+    if not settings.llm_configured:
+        console.print("[red]SPARK_ANTHROPIC_API_KEY is required (or use claude-cli).[/red]")
         raise typer.Exit(1)
 
+    from spark.core.llm import LLMError
     from spark.knowledge.enricher import enrich_knowledge_items
 
-    with console.status("Enriching knowledge items..."):
-        enriched = enrich_knowledge_items(
-            api_key=settings.anthropic_api_key,
-            model=settings.model,
-            batch_size=batch,
-        )
+    try:
+        with console.status("Enriching knowledge items..."):
+            enriched = enrich_knowledge_items(
+                api_key=settings.anthropic_api_key,
+                model=settings.model,
+                batch_size=batch,
+            )
+    except LLMError as err:
+        _fail_llm(err)
 
     if enriched:
         console.print(f"[green]Enriched {enriched} knowledge item(s) with content summaries[/green]")
     else:
         console.print("No items to enrich (all URLs already processed or no URLs found).")
+
+
+@app.command()
+def check(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print/log the nudge instead of sending it (also SPARK_DRY_RUN=true)"
+    ),
+    force: bool = typer.Option(
+        False, "--force", "--ignore-quiet-hours",
+        help="Ignore quiet hours, the daily cap and min-hours-between-nudges",
+    ),
+):
+    """Run ONE pass of the daemon loop now: collect, baseline, detect stalls, nudge, deliver."""
+    from spark.collectors.git_collector import collect_git_activity
+    from spark.core.llm import LLMError
+    from spark.core.nudge_generator import generate_nudge
+    from spark.core.rhythm import update_project_baselines
+    from spark.core.stall_detector import detect_stalls
+    from spark.db.connection import get_session
+    from spark.db.models import Project, ProjectStatus
+
+    settings = get_settings()
+    _init_db_from_settings()
+
+    from spark.knowledge.indexer import init_chromadb
+    init_chromadb(settings.chromadb_path)
+
+    events = collect_git_activity(settings.projects_dir)
+    console.print(f"Collected {len(events)} new git activity events")
+    with get_session() as session:
+        ids = [p.id for p in session.query(Project).filter(
+            Project.status == ProjectStatus.ACTIVE.value).all()]
+    for pid in ids:
+        update_project_baselines(pid)
+    console.print(f"Updated rhythm baselines for {len(ids)} active project(s)")
+
+    stalls = detect_stalls(
+        timezone=settings.timezone,
+        quiet_start=settings.quiet_hours_start,
+        quiet_end=settings.quiet_hours_end,
+        min_hours_between_nudges=settings.min_hours_between_nudges,
+        max_daily_nudges=settings.max_daily_nudges,
+        stall_multiplier=settings.stall_threshold_multiplier,
+        force=force,
+    )
+    if not stalls:
+        console.print("No stalled projects (or blocked by quiet hours / rate limits; try --force).")
+        return
+
+    table = Table(title="Detected stalls")
+    for col in ("Project", "Hours since activity", "Baseline gap (h)", "Confidence"):
+        table.add_column(col)
+    for s in stalls:
+        table.add_row(s.project_name, f"{s.hours_since_activity:.0f}",
+                      f"{s.baseline_gap:.1f}", f"{s.confidence:.2f}")
+    console.print(table)
+
+    top = stalls[0]
+    try:
+        nudge = generate_nudge(
+            stall=top,
+            api_key=settings.anthropic_api_key,
+            model=settings.model,
+            agency_level=settings.agency_level.value,
+        )
+    except LLMError as err:
+        _fail_llm(err)
+        return
+    if not nudge:
+        console.print("[yellow]No nudge generated (no project context).[/yellow]")
+        return
+
+    console.print(f"\n[bold]Nudge for {top.project_name}:[/bold]\n")
+    console.print(nudge, markup=False, highlight=False)
+    console.print()
+
+    if dry_run or settings.dry_run:
+        from spark.delivery.dry_run import DryRunAdapter
+        adapter = DryRunAdapter(settings.dry_run_path)
+        console.print(f"[dim]Delivery: dry-run (logged to {settings.dry_run_path.name}), not sent[/dim]")
+    elif settings.telegram_bot_token and settings.telegram_chat_id:
+        from spark.delivery.telegram import TelegramAdapter
+        adapter = TelegramAdapter(
+            bot_token=settings.telegram_bot_token, chat_id=settings.telegram_chat_id
+        )
+        console.print("Delivery: Telegram")
+    else:
+        console.print("[yellow]No delivery adapter configured; nudge not delivered.[/yellow]")
+        return
+    if not asyncio.run(adapter.send(nudge)):
+        console.print("[red]Delivery failed[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def doctor(
+    live: bool = typer.Option(
+        False, "--live", help="Make one tiny real API call to confirm the model works"
+    ),
+):
+    """Check configuration (and optionally the live model) and report problems."""
+    from spark.config import RETIRED_MODELS
+
+    settings = get_settings()
+    problems: list[str] = []
+
+    def check(ok: bool, label: str, fix: str) -> None:
+        if ok:
+            console.print(f"[green]OK[/green]    {label}")
+        else:
+            console.print(f"[red]FAIL[/red]  {label} - {fix}")
+            problems.append(label)
+
+    console.print(f"Model: [bold]{settings.model}[/bold]  effort={settings.effort}  "
+                  f"thinking={settings.thinking}  backend={settings.llm_backend}")
+    if settings.llm_backend == "claude-cli":
+        import shutil
+
+        check(shutil.which("claude") is not None, "`claude` CLI on PATH",
+              "install Claude Code or use SPARK_LLM_BACKEND=anthropic")
+    else:
+        check(bool(settings.anthropic_api_key), "Anthropic API key set",
+              "set SPARK_ANTHROPIC_API_KEY")
+    check(settings.model not in RETIRED_MODELS, "Model id is not retired",
+          f"{settings.model} has been retired; set SPARK_MODEL to a current model "
+          "(or unset it)")
+    if settings.dry_run:
+        console.print("[yellow]NOTE[/yellow]  Dry run enabled: Telegram is not used")
+    else:
+        check(bool(settings.telegram_bot_token), "Telegram bot token set",
+              "set SPARK_TELEGRAM_BOT_TOKEN")
+        check(bool(settings.telegram_chat_id), "Telegram chat id set",
+              "set SPARK_TELEGRAM_CHAT_ID")
+
+    if live:
+        from spark.core import llm
+
+        if problems:
+            console.print("[yellow]Skipping live check: fix the problems above first.[/yellow]")
+        else:
+            try:
+                result = llm.ping(settings.anthropic_api_key, settings.model)
+                console.print(
+                    f"[green]OK[/green]    Live call: model={result.model} "
+                    f"stop_reason={result.stop_reason} latency={result.latency_s * 1000:.0f}ms"
+                )
+            except llm.LLMError as err:
+                console.print(f"[red]FAIL[/red]  Live call failed: {err}")
+                problems.append("live call")
+
+    if problems:
+        console.print(f"\n[red]{len(problems)} problem(s) found.[/red]")
+        raise typer.Exit(1)
+    console.print("\n[green]All checks passed.[/green]")
 
 
 def _run_index():
