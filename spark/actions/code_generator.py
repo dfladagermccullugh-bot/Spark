@@ -11,9 +11,16 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
-
+from spark.config import DEFAULT_MODEL
 from spark.core.context_engine import build_project_context
+from spark.core.llm import (
+    LLMError,
+    build_request_kwargs,
+    create_message,
+    extract_text,
+    get_config,
+    make_client,
+)
 from spark.db.connection import get_session
 from spark.db.models import AgentTask, TaskStatus, TaskType
 
@@ -152,7 +159,7 @@ def generate_code(
     project_id: str,
     instruction: str,
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_MODEL,
     max_turns: int = 10,
 ) -> CodeGenResult:
     """Generate code for a project using Claude's tool-use capabilities.
@@ -213,33 +220,58 @@ Keep changes focused and minimal. Match the existing code style.\
 """
 
     files_changed = []
-    client = anthropic.Anthropic(api_key=api_key)
-    messages = [{"role": "user", "content": user_prompt}]
+    error: LLMError | None = None
+    summary = ""
 
-    for turn in range(max_turns):
-        response = client.messages.create(
+    if get_config().backend != "anthropic":
+        error = LLMError(
+            f"Code generation is not supported with the {get_config().backend!r} LLM "
+            "backend (it needs tool use); set SPARK_LLM_BACKEND=anthropic",
             model=model,
-            max_tokens=4096,
-            system=CODE_GEN_SYSTEM_PROMPT,
-            tools=CODE_TOOLS,
-            messages=messages,
+            error_type="UnsupportedBackend",
         )
 
-        # Check if we're done (no more tool use)
-        if response.stop_reason == "end_turn":
-            # Extract final text summary
-            summary = ""
-            for block in response.content:
-                if block.type == "text":
-                    summary += block.text
-            break
+    if error is None:
+        client = make_client(api_key)
+        messages = [{"role": "user", "content": user_prompt}]
+        summary = "Reached maximum tool-use turns"
 
-        # Process tool calls
-        tool_results = []
-        assistant_content = response.content
+        for _turn in range(max_turns):
+            try:
+                # No forced tool_choice: the model decides when it is done.
+                response = create_message(
+                    client,
+                    **build_request_kwargs(
+                        model=model,
+                        max_tokens=8192,
+                        system=CODE_GEN_SYSTEM_PROMPT,
+                        tools=CODE_TOOLS,
+                        messages=messages,
+                    ),
+                )
+            except LLMError as e:
+                error = e
+                break
 
-        for block in assistant_content:
-            if block.type == "tool_use":
+            stop = response.stop_reason
+            if stop in ("refusal", "model_context_window_exceeded"):
+                error = LLMError(
+                    "Claude stopped the code-generation run",
+                    model=model,
+                    stop_reason=stop,
+                )
+                break
+
+            tool_blocks = [b for b in response.content if b.type == "tool_use"]
+            if not tool_blocks:
+                # Finished (end_turn) or cut off (max_tokens) without further tool calls
+                summary = extract_text(response.content)
+                if stop == "max_tokens":
+                    summary = (summary + " [output truncated]").strip()
+                break
+
+            tool_results = []
+            for block in tool_blocks:
                 result = _execute_tool(block.name, block.input, project_path)
 
                 if block.name == "write_file" and "Successfully" in result:
@@ -251,12 +283,15 @@ Keep changes focused and minimal. Match the existing code style.\
                     "content": result,
                 })
 
-        messages.append({"role": "assistant", "content": assistant_content})
-        messages.append({"role": "user", "content": tool_results})
-    else:
-        summary = "Reached maximum tool-use turns"
+            # Pass the assistant turn back unchanged (thinking blocks included).
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
 
-    success = len(files_changed) > 0
+    if error is not None:
+        logger.error("Code generation failed: %s", error, exc_info=error.__cause__)
+        summary = f"Claude call failed: {error}"
+
+    success = error is None and len(files_changed) > 0
 
     # Update the task record
     with get_session() as session:
