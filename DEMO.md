@@ -88,3 +88,69 @@ committed in 220 days."
 - Nudge generation crashed with `DetachedInstanceError` reading the project path after its DB
   session closed.
 - `claude` CLI failures printed truncated JSON; they now show the actual message.
+
+## Backtest: is Spark's stall alarm trustworthy?
+
+`spark backtest` replays the production stall rule (`round(avg_gap, 1) * multiplier`, strict `>`)
+over real git history: for every silence between commits it recomputes the baseline as it was at
+that moment, fires an alert once the threshold is crossed, and labels what happened next. No DB,
+network or LLM is involved, so the numbers are reproducible. As-of date: 2026-11-23 (UTC).
+
+Commands (full per-repo tables are in `docs/backtest-2026-11.md` and
+`docs/backtest-2026-11-all-branches.md`):
+
+```
+spark backtest /workspace/spark-backtest-repos/* --multiplier 2 4 8 --as-of 2026-11-23 --out docs/backtest-2026-11.md
+spark backtest /workspace/spark-backtest-repos/* --multiplier 2 4 8 --as-of 2026-11-23 --all-branches --out docs/backtest-2026-11-all-branches.md
+```
+
+Default checkout:
+
+| Setting | Commits | Active wks | Alerts | Alerts/active wk | resumed_24h | resumed_7d | resumed_14d | real_stall | censored | Resumed within 24h | Resumed within 7d | Real-stall precision | Missed | Median h to alert |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Pooled x2 | 396 | 18 | 61 | 3.39 | 44 | 0 | 1 | 12 | 4 | 77% (44/57) | 77% (44/57) | 21% (12/57) | 0 | 0.6 |
+| Pooled x4 | 396 | 18 | 45 | 2.50 | 28 | 0 | 1 | 12 | 4 | 68% (28/41) | 68% (28/41) | 29% (12/41) | 0 | 1.2 |
+| Pooled x8 | 396 | 18 | 39 | 2.17 | 23 | 0 | 1 | 12 | 3 | 64% (23/36) | 64% (23/36) | 33% (12/36) | 0 | 2.4 |
+
+All branches (`git log --all`):
+
+| Setting | Commits | Active wks | Alerts | Alerts/active wk | resumed_24h | resumed_7d | resumed_14d | real_stall | censored | Resumed within 24h | Resumed within 7d | Real-stall precision | Missed | Median h to alert |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Pooled x2 | 441 | 18 | 71 | 3.94 | 54 | 0 | 1 | 12 | 4 | 81% (54/67) | 81% (54/67) | 18% (12/67) | 0 | 0.4 |
+| Pooled x4 | 441 | 18 | 55 | 3.06 | 38 | 0 | 1 | 12 | 4 | 75% (38/51) | 75% (38/51) | 24% (12/51) | 0 | 1.2 |
+| Pooled x8 | 441 | 18 | 47 | 2.61 | 30 | 0 | 1 | 12 | 4 | 70% (30/43) | 70% (30/43) | 28% (12/43) | 0 | 2.4 |
+
+Labels (what the author did after the alert): `resumed_24h`, `resumed_7d` (24h to 7d),
+`resumed_14d` (7 to 14d), `real_stall` (no commit for 14d+), `censored` (still inside the 14-day
+window at the as-of date; excluded from every share). Shares are `k/n` over non-censored alerts.
+
+### Honest reading
+
+- Volume is high at the current default (x2): 61 alerts over 18 active weeks (3.39 per active
+  week) on the default checkout, and only 21% (12/57) of resolved alerts were followed by a real
+  stall. Most alerts (77%) are followed by a commit within 24h, i.e. a nudge that was not needed.
+- Raising the multiplier removes false alarms without losing real stalls: the 12 real stalls
+  are found at x2, x4 and x8, and nothing was missed (missed = 0). Alerts drop 61 to 45 to 39, and
+  precision rises 21% to 29% to 33%. On this data x8 is the best-supported choice of the three,
+  but even there two thirds of resolved alerts are not real stalls.
+- The median alert threshold is only 0.6h to 2.4h, because commits come in bursts and the baseline
+  gap is tiny. A "stall" alarm at that scale mostly measures a lunch break, which suggests the
+  baseline (not only the multiplier) deserves a look. I did not change the default.
+- `all-branches` adds commits (441 vs 396) and more alerts, but the same 12 real stalls.
+
+### Caveats
+
+- Small, uneven sample: 2 to 140 commits per repo, 11 repos, 18 active weeks pooled; one repo
+  (Verity) has about a third of the commits.
+- Default branches are often squash-merged, so the default-checkout history under-counts real
+  working rhythm; `--all-branches` is the closer view but includes unmerged work.
+- Results depend on the as-of date: trailing silences are judged up to 2026-11-23, and later
+  runs would turn some `censored` alerts into `real_stall` or resumed ones.
+- Commits only: the running daemon also resets the stall clock on file edits (the file watcher sets
+  `last_activity_at`), so for someone running the watcher the backtest over-counts alerts.
+- Edge case the data exposed: for very bursty repos `round(avg_gap, 1)` rounds to 0.0h, so the
+  threshold is 0 and production would call any pause a stall (median 0.0h to alert for
+  everyday_watcher, and Spark with `--all-branches`, in the per-repo tables). A minimum baseline
+  is the obvious follow-up; not changed here.
+- `resumed_14d` (return 7 to 14 days after the alert) is my addition to the original four
+  labels, so every alert gets exactly one label.
