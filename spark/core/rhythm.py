@@ -12,6 +12,29 @@ from spark.db.models import ActivityEvent, EventType, Project
 logger = logging.getLogger(__name__)
 
 
+def commit_gap_stats(timestamps: list[datetime], lookback_days: int = 30) -> tuple[float, float]:
+    """Pure (avg, median) hours between consecutive commits, unrounded.
+
+    Keeps commits within ``lookback_days`` of the latest one and ignores gaps of
+    7 days or more (likely vacations, not normal rhythm). With no usable gaps
+    it returns the daily default ``(24.0, 24.0)``.
+    """
+    if not timestamps:
+        return 24.0, 24.0
+    ts = sorted(timestamps)
+    cutoff = ts[-1] - timedelta(days=lookback_days)
+    ts = [t for t in ts if t >= cutoff]
+    gaps = []
+    for i in range(1, len(ts)):
+        gap = (ts[i] - ts[i - 1]).total_seconds() / 3600
+        if gap < 168:
+            gaps.append(gap)
+    if not gaps:
+        return 24.0, 24.0
+    gaps.sort()
+    return sum(gaps) / len(gaps), gaps[len(gaps) // 2]
+
+
 def compute_rhythm_profile(project_id: str, lookback_days: int = 30) -> dict:
     """Compute a work rhythm profile for a project.
 
@@ -62,17 +85,7 @@ def compute_rhythm_profile(project_id: str, lookback_days: int = 30) -> dict:
 
         timestamps = [e.occurred_at for e in events]
 
-        # Compute gaps between consecutive commits
-        gaps_hours = []
-        for i in range(1, len(timestamps)):
-            gap = (timestamps[i] - timestamps[i - 1]).total_seconds() / 3600
-            # Ignore gaps > 7 days (likely vacations, not normal rhythm)
-            if gap < 168:
-                gaps_hours.append(gap)
-
-        avg_gap = sum(gaps_hours) / len(gaps_hours) if gaps_hours else 24.0
-        sorted_gaps = sorted(gaps_hours)
-        median_gap = sorted_gaps[len(sorted_gaps) // 2] if sorted_gaps else 24.0
+        avg_gap, median_gap = commit_gap_stats(timestamps, lookback_days)
 
         # Day-of-week activity
         dow_counts: dict[int, int] = defaultdict(int)

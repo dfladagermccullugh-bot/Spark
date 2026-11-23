@@ -844,6 +844,74 @@ def check(
 
 
 @app.command()
+def backtest(
+    paths: list[str] = typer.Argument(..., help="Git repositories to replay"),
+    multiplier: list[float] = typer.Option(
+        [2.0], "--multiplier", help="Stall multiplier (repeat the flag or list values: 2 4 8)"
+    ),
+    all_branches: bool = typer.Option(False, "--all-branches", help="Use git log --all"),
+    as_of: str = typer.Option(None, "--as-of", help="YYYY-MM-DD (UTC); default today"),
+    out: Path = typer.Option(None, "--out", help="Write the markdown report here"),
+    json_out: Path = typer.Option(None, "--json", help="Write the JSON report here"),
+):
+    """Replay the stall rule over real git history (no DB, no LLM, no network)."""
+    import json
+    import re
+    import subprocess
+    from datetime import timezone
+
+    from spark.core.backtest import render_markdown, run_backtest
+
+    # typer list[float] takes one value per flag: `--multiplier 2 4 8` leaves "4" and
+    # "8" in PATHS. Move bare numbers that are not real paths back to multipliers.
+    repos: list[str] = []
+    mults = list(multiplier)
+    for tok in paths:
+        if re.fullmatch(r"\d+(\.\d+)?", tok) and not Path(tok).exists():
+            mults.append(float(tok))
+        else:
+            repos.append(tok)
+    mults = sorted(set(mults))
+    if not repos:
+        console.print("[red]No repository paths given.[/red]")
+        raise typer.Exit(1)
+
+    if as_of:
+        try:
+            as_of_dt = datetime.strptime(as_of, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            console.print(f"[red]--as-of must be YYYY-MM-DD, got {as_of!r}[/red]")
+            raise typer.Exit(1)
+    else:
+        as_of_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    for p in repos:
+        if not Path(p).exists():
+            console.print(f"[red]Path does not exist: {p}[/red]")
+            raise typer.Exit(1)
+
+    try:
+        report = run_backtest(repos, mults, all_branches, as_of_dt)
+    except subprocess.CalledProcessError as err:
+        detail = (err.stderr or "").strip()
+        from rich.markup import escape
+        console.print(f"[red]git log failed:[/red] {escape(detail or str(err))}")
+        raise typer.Exit(1)
+
+    command = "spark backtest " + " ".join(repos)
+    command += " --multiplier " + " ".join(f"{m:g}" for m in mults)
+    if all_branches:
+        command += " --all-branches"
+    command += f" --as-of {as_of_dt.date().isoformat()}"
+    md = render_markdown(report, command)
+    typer.echo(md)
+    if out:
+        out.write_text(md + "\n", encoding="utf-8")
+    if json_out:
+        json_out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+@app.command()
 def doctor(
     live: bool = typer.Option(
         False, "--live", help="Make one tiny real API call to confirm the model works"
